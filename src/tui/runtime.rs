@@ -57,7 +57,6 @@ impl Drop for TerminalGuard {
 }
 
 const NAME_WIDTH: usize = 9;
-const MAX_EVENT_BATCH: usize = 256;
 
 struct FrameState {
     frame_area: Rect,
@@ -71,20 +70,14 @@ enum EventLoopResult<T> {
     Return(T),
 }
 
-fn drain_events(wait: Duration) -> Result<Vec<Event>> {
+fn read_event(wait: Duration) -> Result<Option<Event>> {
     if !event::poll(wait).map_err(|e| AppError::Io(io::Error::other(e)))? {
-        return Ok(Vec::new());
+        return Ok(None);
     }
 
-    let mut events = vec![event::read().map_err(|e| AppError::Io(io::Error::other(e)))?];
-
-    while events.len() < MAX_EVENT_BATCH
-        && event::poll(Duration::ZERO).map_err(|e| AppError::Io(io::Error::other(e)))?
-    {
-        events.push(event::read().map_err(|e| AppError::Io(io::Error::other(e)))?);
-    }
-
-    Ok(events)
+    event::read()
+        .map(Some)
+        .map_err(|e| AppError::Io(io::Error::other(e)))
 }
 
 fn prepare_frame(app: &mut App, terminal: &mut Terminal<CrosstermBackend<Stderr>>) -> FrameState {
@@ -123,63 +116,59 @@ fn handle_events<F>(
 where
     F: FnMut(&mut App, Action) -> EventLoopResult<Option<Action>>,
 {
-    let events = drain_events(poll_timeout)?;
-    for ev in events {
-        let key = match ev {
-            Event::Key(k) if k.kind == KeyEventKind::Press => k,
-            Event::Mouse(m) => {
-                match m.kind {
-                    MouseEventKind::ScrollDown => {
-                        app.scroll_mouse(3, frame_state.viewport_height);
-                    }
-                    MouseEventKind::ScrollUp => {
-                        app.scroll_mouse(-3, frame_state.viewport_height);
-                    }
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        if app.handle_view_click(
-                            m.row,
-                            frame_state.frame_area,
-                            frame_state.viewport_height,
-                        ) {
-                            return Ok(EventLoopResult::Break);
-                        }
-                        if allow_list_click_enter
-                            && app.handle_list_click(m.row, frame_state.frame_area)
-                        {
-                            app.enter_view_mode(frame_state.content_width);
-                            return Ok(EventLoopResult::Break);
-                        }
-                    }
-                    MouseEventKind::Moved => {
-                        app.handle_view_mouse_move(m.row, frame_state.frame_area);
-                    }
-                    _ => {}
+    let Some(ev) = read_event(poll_timeout)? else {
+        return Ok(EventLoopResult::Continue);
+    };
+    let key = match ev {
+        Event::Key(k) if k.kind == KeyEventKind::Press => k,
+        Event::Mouse(m) => {
+            match m.kind {
+                MouseEventKind::ScrollDown => {
+                    app.scroll_mouse(3, frame_state.viewport_height);
                 }
-                continue;
+                MouseEventKind::ScrollUp => {
+                    app.scroll_mouse(-3, frame_state.viewport_height);
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if app.handle_view_click(
+                        m.row,
+                        frame_state.frame_area,
+                        frame_state.viewport_height,
+                    ) {
+                        return Ok(EventLoopResult::Break);
+                    }
+                    if allow_list_click_enter
+                        && app.handle_list_click(m.row, frame_state.frame_area)
+                    {
+                        app.enter_view_mode(frame_state.content_width);
+                        return Ok(EventLoopResult::Break);
+                    }
+                }
+                MouseEventKind::Moved => {
+                    app.handle_view_mouse_move(m.row, frame_state.frame_area);
+                }
+                _ => {}
             }
-            _ => continue,
-        };
-
-        if allow_list_click_enter
-            && matches!(app.app_mode(), AppMode::List)
-            && *app.dialog_mode() == DialogMode::None
-            && key.code == KeyCode::Enter
-            && !app.is_loading()
-            && app.selected().is_some()
-        {
-            app.enter_view_mode(frame_state.content_width);
-            return Ok(EventLoopResult::Break);
+            return Ok(EventLoopResult::Continue);
         }
+        _ => return Ok(EventLoopResult::Continue),
+    };
 
-        if let Some(action) = app.handle_key(key.code, key.modifiers, frame_state.viewport_height) {
-            match on_action(app, action) {
-                EventLoopResult::Continue => {}
-                EventLoopResult::Break => return Ok(EventLoopResult::Break),
-                EventLoopResult::Return(action) => return Ok(EventLoopResult::Return(action)),
-            }
-        }
+    if allow_list_click_enter
+        && matches!(app.app_mode(), AppMode::List)
+        && *app.dialog_mode() == DialogMode::None
+        && key.code == KeyCode::Enter
+        && !app.is_loading()
+        && app.selected().is_some()
+    {
+        app.enter_view_mode(frame_state.content_width);
+        return Ok(EventLoopResult::Break);
     }
-    Ok(EventLoopResult::Continue)
+
+    let Some(action) = app.handle_key(key.code, key.modifiers, frame_state.viewport_height) else {
+        return Ok(EventLoopResult::Continue);
+    };
+    Ok(on_action(app, action))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,8 +226,10 @@ pub fn run_with_loader(
         }
 
         let frame_state = prepare_frame(&mut app, &mut guard.terminal);
-        app.receive_search_results();
         draw_frame(&app, &mut guard.terminal)?;
+        if app.receive_search_results() {
+            draw_frame(&app, &mut guard.terminal)?;
+        }
 
         let poll_timeout = if app.is_loading() {
             Duration::from_millis(50)

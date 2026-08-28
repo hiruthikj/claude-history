@@ -79,6 +79,10 @@ pub fn embed_chunks_with_budget_and_save(
                 return Err(error);
             }
         };
+        if let Err(error) = validate_passage_embeddings(&texts, &embeddings) {
+            save_pending_cache(cache, completed, &mut last_saved, &mut save);
+            return Err(error);
+        }
 
         for (chunks, embedding) in batch.iter().zip(embeddings) {
             let key = embedding_cache_key(&chunks[0].text);
@@ -104,6 +108,30 @@ pub fn embed_chunks_with_budget_and_save(
     }
 
     Ok(embedded)
+}
+
+fn validate_passage_embeddings(texts: &[String], embeddings: &[Vec<f32>]) -> Result<()> {
+    if embeddings.len() != texts.len() {
+        return Err(AppError::ConfigError(format!(
+            "semantic embedder returned {} passage embeddings for {} passages",
+            embeddings.len(),
+            texts.len()
+        )));
+    }
+    let Some(dimensions) = embeddings.first().map(Vec::len) else {
+        return Ok(());
+    };
+    if dimensions == 0
+        || embeddings.iter().any(|embedding| {
+            embedding.len() != dimensions || embedding.iter().any(|value| !value.is_finite())
+        })
+    {
+        return Err(AppError::ConfigError(
+            "semantic embedder returned empty, inconsistent, or non-finite passage embeddings"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn save_pending_cache(
@@ -145,7 +173,6 @@ fn embedded_chunk(chunk: &SemanticChunk, embedding: Vec<f32>) -> EmbeddedChunk {
         source: chunk.source,
         session: chunk.session.clone(),
         chunk_index: chunk.chunk_index,
-        key: chunk.key.clone(),
         text: chunk.text.clone(),
         message_range: chunk.message_range,
         embedding,
@@ -346,7 +373,6 @@ mod tests {
             source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
             session: "session".to_string(),
             chunk_index,
-            key: key.to_string(),
             text: text.to_string(),
             message_range: crate::agent::refs::MessageRange::single(1),
         }
@@ -362,6 +388,15 @@ mod tests {
 
     fn cache_text(cache: &mut EmbeddingCache, text: &str) {
         cache.entries.insert(embedding_cache_key(text), cached());
+    }
+
+    #[test]
+    fn passage_embedding_validation_rejects_invalid_output() {
+        let texts = vec!["alpha".to_string(), "beta".to_string()];
+
+        assert!(validate_passage_embeddings(&texts, &[vec![1.0, 0.0]]).is_err());
+        assert!(validate_passage_embeddings(&texts, &[vec![1.0], vec![1.0, 0.0]]).is_err());
+        assert!(validate_passage_embeddings(&texts, &[vec![f32::NAN], vec![1.0]]).is_err());
     }
 
     #[test]

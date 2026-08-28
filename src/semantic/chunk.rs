@@ -1,7 +1,8 @@
 use crate::agent::refs::MessageRange;
 use crate::history::Conversation;
 use crate::semantic::types::{ChunkConfig, SemanticChunk, SemanticChunkSource};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
 
 pub fn build_chunks(conversations: &[&Conversation], config: ChunkConfig) -> Vec<SemanticChunk> {
     build_chunks_with_indices(conversations.iter().copied().enumerate(), config)
@@ -49,14 +50,12 @@ where
             .and_then(|stem| stem.to_str())
             .unwrap_or("?")
             .to_owned();
-        let cache_path = normalized_cache_path(&conversation.path);
         for (chunk_index, chunk) in grouped.into_iter().enumerate() {
             push_chunk(
                 &mut chunks,
                 conversation_index,
                 source,
                 &session,
-                &cache_path,
                 chunk_index,
                 &chunk,
             );
@@ -196,39 +195,19 @@ fn push_chunk(
     conversation_index: usize,
     source: SemanticChunkSource,
     session: &str,
-    cache_path: &Path,
     chunk_index: usize,
     chunk: &ChunkText,
 ) {
     let text = normalize_snippet(&chunk.text);
     if !text.is_empty() {
-        let key = chunk_key(cache_path, chunk_index);
         chunks.push(SemanticChunk {
             conversation_index,
             source,
             session: session.to_owned(),
             chunk_index,
-            key,
             text,
             message_range: chunk.message_range,
         });
-    }
-}
-
-fn chunk_key(cache_path: &Path, chunk_index: usize) -> String {
-    format!("{}:{chunk_index}", cache_path.display())
-}
-
-fn normalized_cache_path(path: &Path) -> PathBuf {
-    if let Ok(path) = path.canonicalize() {
-        return path;
-    }
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
     }
 }
 
@@ -404,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_identity_uses_selected_slice_index_and_session_key() {
+    fn chunk_identity_uses_selected_slice_index_and_session() {
         let first = test_conversation(
             "/projects/project-a/session-1.jsonl",
             vec!["first".to_string()],
@@ -418,11 +397,8 @@ mod tests {
 
         assert_eq!(chunks[0].conversation_index, 0);
         assert_eq!(chunks[0].session, "session-1");
-        assert_ne!(chunks[0].key, "session-1:0");
         assert_eq!(chunks[1].conversation_index, 1);
         assert_eq!(chunks[1].session, "session-2");
-        assert_ne!(chunks[1].key, "session-2:0");
-        assert_ne!(chunks[0].key, chunks[1].key);
     }
 
     #[test]
@@ -443,39 +419,6 @@ mod tests {
         assert_eq!(chunks[0].session, "session-1");
         assert_eq!(chunks[1].conversation_index, 11);
         assert_eq!(chunks[1].session, "session-2");
-    }
-
-    #[test]
-    fn chunk_identity_distinguishes_copied_sessions() {
-        let first = test_conversation(
-            "/projects/project-a/session.jsonl",
-            vec!["first".to_string()],
-        );
-        let second = test_conversation(
-            "/projects/project-b/session.jsonl",
-            vec!["second".to_string()],
-        );
-
-        let chunks = build_chunks(&[&first, &second], ChunkConfig::default());
-
-        assert_eq!(chunks[0].session, "session");
-        assert_eq!(chunks[1].session, "session");
-        assert_ne!(chunks[0].key, chunks[1].key);
-    }
-
-    #[test]
-    fn chunk_identity_normalizes_existing_relative_paths() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("session.jsonl");
-        std::fs::write(&path, "").expect("write session");
-        let cwd = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(dir.path()).expect("set cwd");
-        let relative = test_conversation("session.jsonl", vec!["relative".to_string()]);
-        let absolute = test_conversation(&path.to_string_lossy(), vec!["absolute".to_string()]);
-        let chunks = build_chunks(&[&relative, &absolute], ChunkConfig::default());
-        std::env::set_current_dir(cwd).expect("restore cwd");
-
-        assert_eq!(chunks[0].key, chunks[1].key);
     }
 
     #[test]

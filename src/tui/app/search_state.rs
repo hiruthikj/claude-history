@@ -71,58 +71,66 @@ pub(super) fn spawn_search_worker() -> (mpsc::Sender<SearchCommand>, mpsc::Recei
     std::thread::Builder::new()
         .name("search-worker".into())
         .spawn(move || {
-            let mut conversations: Arc<Vec<Conversation>> = Arc::new(Vec::new());
-            let mut searchable: Arc<Vec<SearchableConversation>> = Arc::new(Vec::new());
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .thread_name(|_| "lexical-rank-worker".to_string())
+                .build()
+                .expect("failed to create lexical ranking thread pool");
+            pool.install(move || {
+                let mut conversations: Arc<Vec<Conversation>> = Arc::new(Vec::new());
+                let mut searchable: Arc<Vec<SearchableConversation>> = Arc::new(Vec::new());
 
-            while let Ok(cmd) = cmd_rx.recv() {
-                match cmd {
-                    SearchCommand::UpdateData {
-                        conversations: c,
-                        searchable: s,
-                    } => {
-                        conversations = c;
-                        searchable = s;
-                    }
-                    SearchCommand::Search {
-                        mut query,
-                        mut generation,
-                        mut mode,
-                    } => {
-                        while let Ok(pending) = cmd_rx.try_recv() {
-                            match pending {
-                                SearchCommand::UpdateData {
-                                    conversations: c,
-                                    searchable: s,
-                                } => {
-                                    conversations = c;
-                                    searchable = s;
-                                }
-                                SearchCommand::Search {
-                                    query: q,
-                                    generation: g,
-                                    mode: m,
-                                } => {
-                                    query = q;
-                                    generation = g;
-                                    mode = m;
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        SearchCommand::UpdateData {
+                            conversations: c,
+                            searchable: s,
+                        } => {
+                            conversations = c;
+                            searchable = s;
+                        }
+                        SearchCommand::Search {
+                            mut query,
+                            mut generation,
+                            mut mode,
+                        } => {
+                            while let Ok(pending) = cmd_rx.try_recv() {
+                                match pending {
+                                    SearchCommand::UpdateData {
+                                        conversations: c,
+                                        searchable: s,
+                                    } => {
+                                        conversations = c;
+                                        searchable = s;
+                                    }
+                                    SearchCommand::Search {
+                                        query: q,
+                                        generation: g,
+                                        mode: m,
+                                    } => {
+                                        query = q;
+                                        generation = g;
+                                        mode = m;
+                                    }
                                 }
                             }
+
+                            let now = chrono::Local::now();
+                            let filtered = search::search(&conversations, &searchable, &query, now);
+                            let parsed = ParsedQuery::parse(&query);
+                            let evidence =
+                                build_search_evidence(&conversations, &filtered, &parsed);
+
+                            let _ = res_tx.send(SearchResponse {
+                                filtered,
+                                generation,
+                                mode,
+                                evidence,
+                            });
                         }
-
-                        let now = chrono::Local::now();
-                        let filtered = search::search(&conversations, &searchable, &query, now);
-                        let parsed = ParsedQuery::parse(&query);
-                        let evidence = build_search_evidence(&conversations, &filtered, &parsed);
-
-                        let _ = res_tx.send(SearchResponse {
-                            filtered,
-                            generation,
-                            mode,
-                            evidence,
-                        });
                     }
                 }
-            }
+            });
         })
         .expect("failed to spawn search worker thread");
 
@@ -197,6 +205,12 @@ impl App {
             }
             self.semantic_sent_corpus_version = self.semantic_corpus_version;
             self.semantic_sent_scope_signature = None;
+        } else if self
+            .semantic_sent_scope_signature
+            .as_ref()
+            .is_some_and(|(corpus_version, _)| *corpus_version == self.semantic_corpus_version)
+        {
+            return Some((self.semantic_corpus_version, self.semantic_scope_version));
         }
 
         let scope = self.semantic_scope_indices();
@@ -345,6 +359,10 @@ impl App {
                 && (response.mode == ListSearchMode::Lexical || semantic_fallback_pending)
             {
                 let filtered = self.filter_indices(response.filtered);
+                if response.mode == ListSearchMode::Semantic && filtered.is_empty() {
+                    self.search_in_flight = false;
+                    continue;
+                }
                 self.lexical_evidence = response.evidence;
                 if response.mode == ListSearchMode::Semantic {
                     self.semantic_search.results.clear();
@@ -535,6 +553,7 @@ impl App {
     pub(super) fn toggle_workspace_filter(&mut self) {
         if self.current_project_dir_name.is_some() {
             self.workspace_filter = !self.workspace_filter;
+            self.semantic_sent_scope_signature = None;
             self.invalidate_search_generation();
             if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
                 self.dispatch_search();

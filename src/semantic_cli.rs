@@ -42,6 +42,7 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
         scope: &candidates,
         corpus_version: 1,
         prewarm: false,
+        include_chunk_hits: false,
     };
     let mut state = SemanticIndexState::new();
     let cancellation = SemanticCancellationToken::new();
@@ -134,6 +135,7 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
         scope: &candidates,
         corpus_version: 1,
         prewarm: true,
+        include_chunk_hits: false,
     };
     let mut state = SemanticIndexState::new();
     for (key, entry) in &mut state.cache.entries {
@@ -575,6 +577,7 @@ mod tests {
             scope: candidates,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         }
     }
 
@@ -780,7 +783,6 @@ mod tests {
                     source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                     session: format!("session-{}", conversation_index + 1),
                     chunk_index: 0,
-                    key: format!("session-{conversation_index}:0"),
                     text: conversation.semantic_turns[0].clone(),
                     message_range: crate::agent::refs::MessageRange::single(1),
                     embedding: vec![1.0, 0.0],

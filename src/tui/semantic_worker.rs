@@ -75,7 +75,14 @@ pub fn spawn_semantic_worker() -> (
 
     std::thread::Builder::new()
         .name("semantic-search-worker".into())
-        .spawn(move || run_semantic_worker(cmd_rx, res_tx, worker_cancellation))
+        .spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .thread_name(|_| "semantic-rank-worker".to_string())
+                .build()
+                .expect("failed to create semantic ranking thread pool");
+            pool.install(|| run_semantic_worker(cmd_rx, res_tx, worker_cancellation));
+        })
         .expect("failed to spawn semantic search worker thread");
 
     (cmd_tx, res_rx, cancellation)
@@ -145,6 +152,7 @@ fn run_semantic_worker(
             scope: &scope,
             corpus_version: request.corpus_version,
             prewarm: request.prewarm,
+            include_chunk_hits: false,
         };
         let response = match state.has_chunks(&index_request, &cancellation) {
             Ok(true) => {

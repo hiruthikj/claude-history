@@ -4,17 +4,20 @@ use crate::search::literal::Literal;
 use crate::semantic::cache::{
     cache_miss_count, embed_chunks_with_budget_and_save, read_embedding_cache,
 };
+#[cfg(test)]
 use crate::semantic::chunk::build_chunks_with_sources;
 use crate::semantic::embed::SemanticEmbedder;
-use crate::semantic::filter::filter_embedded_chunks_by_literals;
-use crate::semantic::rank::{rank_chunk_hits, rank_conversation_hits};
+use crate::semantic::rank::rank_prepared;
+#[cfg(test)]
+use crate::semantic::types::SemanticChunk;
 use crate::semantic::types::{
-    ChunkConfig, EmbeddedChunk, EmbeddingCache, SemanticCancellationToken, SemanticChunk,
-    SemanticChunkSource, SemanticHit,
+    ChunkConfig, EmbeddingCache, SemanticCancellationToken, SemanticChunkSource, SemanticHit,
 };
-use std::collections::HashSet;
-use std::path::PathBuf;
+use rayon::prelude::*;
 use std::sync::Arc;
+
+mod resident;
+use resident::{CorpusSignature, ResidentIndex, corpus_has_chunks};
 
 #[derive(Clone)]
 pub struct SemanticIndexCandidate {
@@ -30,6 +33,7 @@ pub struct SemanticIndexRequest<'a> {
     pub scope: &'a [SemanticIndexCandidate],
     pub corpus_version: u64,
     pub prewarm: bool,
+    pub include_chunk_hits: bool,
 }
 
 pub struct SemanticIndexResponse {
@@ -51,30 +55,9 @@ pub enum SemanticIndexProgress {
     EmptyCorpus,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SemanticIndexSignature {
-    corpus_version: u64,
-    chunk_config: ChunkConfig,
-    conversations: Vec<ConversationSignature>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ConversationSignature {
-    index: usize,
-    path: PathBuf,
-    semantic_turns: Vec<String>,
-    semantic_turn_ranges: Vec<crate::agent::refs::MessageRange>,
-    source: SemanticChunkSource,
-}
-
-#[derive(Clone)]
-struct ResidentChunk {
-    embedded: EmbeddedChunk,
-}
-
 pub struct SemanticIndexState {
-    signature: Option<SemanticIndexSignature>,
-    embedded_chunks: Vec<ResidentChunk>,
+    signature: Option<CorpusSignature>,
+    resident: ResidentIndex,
     pub cache: EmbeddingCache,
     pub chunk_config: ChunkConfig,
 }
@@ -87,10 +70,14 @@ impl SemanticIndexState {
     pub fn with_chunk_config(chunk_config: ChunkConfig) -> Self {
         Self {
             signature: None,
-            embedded_chunks: Vec::new(),
+            resident: ResidentIndex::default(),
             cache: read_embedding_cache(chunk_config),
             chunk_config,
         }
+    }
+
+    pub fn indexed_chunk_count(&self) -> usize {
+        self.resident.chunk_count()
     }
 
     pub fn has_chunks(
@@ -102,9 +89,9 @@ impl SemanticIndexState {
             return Err(AppError::SemanticSearchCancelled);
         }
         if self.signature_matches(request) {
-            return Ok(!self.embedded_chunks.is_empty());
+            return Ok(self.indexed_chunk_count() > 0);
         }
-        Ok(!full_corpus_chunks(request, self.chunk_config).is_empty())
+        Ok(corpus_has_chunks(request, self.chunk_config))
     }
 
     pub fn clear_empty(
@@ -115,8 +102,8 @@ impl SemanticIndexState {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
-        self.signature = Some(semantic_index_signature(request, self.chunk_config));
-        self.embedded_chunks.clear();
+        self.signature = Some(CorpusSignature::of(request, self.chunk_config));
+        self.resident.clear();
         Ok(())
     }
 
@@ -145,91 +132,48 @@ impl SemanticIndexState {
         cancellation: &SemanticCancellationToken,
         max_new_embeddings: Option<usize>,
         mut progress: impl FnMut(SemanticIndexProgress),
-        mut save_cache: impl FnMut(&EmbeddingCache),
+        save_cache: impl FnMut(&EmbeddingCache),
     ) -> Result<SemanticIndexResponse> {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
         if self.signature_matches(request) {
             progress(SemanticIndexProgress::CacheReady);
-            return Ok(SemanticIndexResponse {
-                hits: Vec::new(),
-                chunk_hits: Vec::new(),
-                indexed_chunk_count: self.embedded_chunks.len(),
-                missing_chunk_count: 0,
-                query_embedding_returned: true,
-                progress: if self.embedded_chunks.is_empty() {
-                    SemanticIndexProgress::EmptyCorpus
-                } else {
-                    SemanticIndexProgress::CacheReady
-                },
-                prewarm: request.prewarm,
-            });
+            return Ok(self.refresh_response(request, 0));
         }
-        let next_signature = semantic_index_signature(request, self.chunk_config);
-        let mut missing_chunk_count = 0;
-        if self.signature.as_ref() != Some(&next_signature) {
-            let chunks = full_corpus_chunks(request, self.chunk_config);
 
-            if chunks.is_empty() {
-                self.signature = Some(next_signature);
-                self.embedded_chunks.clear();
-                return Ok(SemanticIndexResponse {
-                    hits: Vec::new(),
-                    chunk_hits: Vec::new(),
-                    indexed_chunk_count: 0,
-                    missing_chunk_count: 0,
-                    query_embedding_returned: true,
-                    progress: SemanticIndexProgress::EmptyCorpus,
-                    prewarm: request.prewarm,
-                });
-            }
-
-            let miss_count = cache_miss_count(&chunks, &self.cache);
-            let embedding_count =
-                max_new_embeddings.map_or(miss_count, |limit| miss_count.min(limit));
-            missing_chunk_count = miss_count.saturating_sub(embedding_count);
-            progress(if embedding_count > 0 {
-                SemanticIndexProgress::Embedding {
-                    completed: 0,
-                    total: embedding_count,
-                }
-            } else {
-                SemanticIndexProgress::CacheReady
-            });
-            let embedded_chunks = embed_chunks_with_budget_and_save(
-                embedder,
-                chunks,
-                &mut self.cache,
-                cancellation,
-                max_new_embeddings,
-                |completed, total| {
-                    progress(SemanticIndexProgress::Embedding { completed, total });
-                },
-                &mut save_cache,
-            )?
-            .into_iter()
-            .map(|embedded| ResidentChunk { embedded })
-            .collect();
-            self.embedded_chunks = embedded_chunks;
-            self.signature = (embedding_count == miss_count).then_some(next_signature);
+        self.signature = None;
+        let next_signature = CorpusSignature::of(request, self.chunk_config);
+        let plan = self
+            .resident
+            .plan_refresh(request, self.chunk_config, cancellation)?;
+        let miss_count = cache_miss_count(&plan.chunks, &self.cache);
+        let embedding_count = max_new_embeddings.map_or(miss_count, |limit| miss_count.min(limit));
+        let missing_chunk_count = miss_count.saturating_sub(embedding_count);
+        progress(if embedding_count == 0 {
+            SemanticIndexProgress::CacheReady
         } else {
-            progress(SemanticIndexProgress::CacheReady);
-        }
+            SemanticIndexProgress::Embedding {
+                completed: 0,
+                total: embedding_count,
+            }
+        });
 
-        Ok(SemanticIndexResponse {
-            hits: Vec::new(),
-            chunk_hits: Vec::new(),
-            indexed_chunk_count: self.embedded_chunks.len(),
-            missing_chunk_count,
-            query_embedding_returned: true,
-            progress: if self.embedded_chunks.is_empty() {
-                SemanticIndexProgress::EmptyCorpus
-            } else {
-                SemanticIndexProgress::CacheReady
-            },
-            prewarm: request.prewarm,
-        })
+        let (plan, chunks) = plan.take_chunks();
+        let embedded = embed_chunks_with_budget_and_save(
+            embedder,
+            chunks,
+            &mut self.cache,
+            cancellation,
+            max_new_embeddings,
+            |completed, total| progress(SemanticIndexProgress::Embedding { completed, total }),
+            save_cache,
+        )?;
+        self.resident.absorb(plan, embedded);
+        if self.resident.is_complete(request) {
+            self.signature = Some(next_signature);
+        }
+        Ok(self.refresh_response(request, missing_chunk_count))
     }
 
     pub fn rank_refreshed(
@@ -242,56 +186,59 @@ impl SemanticIndexState {
         if cancellation.is_cancelled() {
             return Err(AppError::SemanticSearchCancelled);
         }
-        let scoped_chunks = self.scoped_embedded_chunks(request, cancellation)?;
-        if scoped_chunks.is_empty() || request.prewarm {
-            return Ok(SemanticIndexResponse {
-                hits: Vec::new(),
-                chunk_hits: Vec::new(),
-                indexed_chunk_count: self.embedded_chunks.len(),
-                missing_chunk_count: 0,
-                query_embedding_returned: true,
-                progress: if scoped_chunks.is_empty() {
+        let scoped = self.resident.scoped(request.scope, cancellation)?;
+        if scoped.is_empty() || request.prewarm {
+            return Ok(self.response(
+                Vec::new(),
+                Vec::new(),
+                true,
+                if scoped.is_empty() {
                     SemanticIndexProgress::EmptyCorpus
                 } else {
                     SemanticIndexProgress::CacheReady
                 },
-                prewarm: request.prewarm,
-            });
+                request.prewarm,
+            ));
         }
 
         progress(SemanticIndexProgress::Ranking);
         let Some(query_embedding) = embedder.embed_query(request.query)? else {
-            return Ok(SemanticIndexResponse {
-                hits: Vec::new(),
-                chunk_hits: Vec::new(),
-                indexed_chunk_count: self.embedded_chunks.len(),
-                missing_chunk_count: 0,
-                query_embedding_returned: false,
-                progress: SemanticIndexProgress::EmptyCorpus,
-                prewarm: request.prewarm,
-            });
+            return Ok(self.response(
+                Vec::new(),
+                Vec::new(),
+                false,
+                SemanticIndexProgress::EmptyCorpus,
+                request.prewarm,
+            ));
         };
 
-        let scoped_chunks =
-            filter_embedded_chunks_by_literals(scoped_chunks, request.literal_filters);
-        let chunk_hits = rank_chunk_hits(
+        let literals = request.literal_filters;
+        let scoped = if literals.is_empty() {
+            scoped
+        } else {
+            scoped
+                .into_par_iter()
+                .filter(|input| {
+                    literals
+                        .iter()
+                        .all(|literal| literal.matches(&input.chunk.text))
+                })
+                .collect()
+        };
+        let ranked = rank_prepared(
             request.query,
             &query_embedding,
-            &scoped_chunks,
+            &scoped,
+            request.include_chunk_hits,
             cancellation,
         )?;
-        let hits = rank_conversation_hits(&chunk_hits);
-        let progress = SemanticIndexProgress::Complete;
-
-        Ok(SemanticIndexResponse {
-            hits,
-            chunk_hits,
-            indexed_chunk_count: self.embedded_chunks.len(),
-            missing_chunk_count: 0,
-            query_embedding_returned: true,
-            progress,
-            prewarm: request.prewarm,
-        })
+        Ok(self.response(
+            ranked.conversations,
+            ranked.chunks,
+            true,
+            SemanticIndexProgress::Complete,
+            request.prewarm,
+        ))
     }
 
     pub fn refresh_or_prewarm(
@@ -342,9 +289,59 @@ impl SemanticIndexState {
     pub(crate) fn with_cache(chunk_config: ChunkConfig, cache: EmbeddingCache) -> Self {
         Self {
             signature: None,
-            embedded_chunks: Vec::new(),
+            resident: ResidentIndex::default(),
             cache,
             chunk_config,
+        }
+    }
+
+    #[cfg(test)]
+    fn resident_conversation_count(&self) -> usize {
+        self.resident.conversation_count()
+    }
+
+    #[cfg(test)]
+    fn prepared_chunk_count(&self) -> usize {
+        self.resident.prepared_chunk_count()
+    }
+
+    fn signature_matches(&self, request: &SemanticIndexRequest<'_>) -> bool {
+        self.signature
+            .as_ref()
+            .is_some_and(|signature| signature.matches(request, self.chunk_config))
+    }
+
+    fn refresh_response(
+        &self,
+        request: &SemanticIndexRequest<'_>,
+        missing_chunk_count: usize,
+    ) -> SemanticIndexResponse {
+        let progress = if self.indexed_chunk_count() == 0 {
+            SemanticIndexProgress::EmptyCorpus
+        } else {
+            SemanticIndexProgress::CacheReady
+        };
+        let mut response = self.response(Vec::new(), Vec::new(), true, progress, request.prewarm);
+        response.missing_chunk_count = missing_chunk_count;
+        response
+    }
+
+    fn response(
+        &self,
+        hits: Vec<SemanticHit>,
+        chunk_hits: Vec<SemanticHit>,
+        query_embedding_returned: bool,
+        progress: SemanticIndexProgress,
+        prewarm: bool,
+    ) -> SemanticIndexResponse {
+        SemanticIndexResponse {
+            hits,
+            chunk_hits,
+            indexed_chunk_count: self.indexed_chunk_count(),
+            missing_chunk_count: 0,
+            query_embedding_returned,
+            progress,
+            prewarm,
         }
     }
 }
@@ -352,51 +349,6 @@ impl SemanticIndexState {
 impl Default for SemanticIndexState {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl SemanticIndexState {
-    fn signature_matches(&self, request: &SemanticIndexRequest<'_>) -> bool {
-        let Some(signature) = &self.signature else {
-            return false;
-        };
-        signature.corpus_version == request.corpus_version
-            && signature.chunk_config == self.chunk_config
-            && signature.conversations.len() == request.full_corpus.len()
-            && signature
-                .conversations
-                .iter()
-                .zip(request.full_corpus)
-                .all(|(stored, candidate)| {
-                    stored.index == candidate.index
-                        && stored.source == candidate.source
-                        && stored.path == candidate.conversation.path
-                        && stored.semantic_turns == candidate.conversation.semantic_turns
-                        && stored.semantic_turn_ranges
-                            == candidate.conversation.semantic_turn_ranges
-                })
-    }
-
-    fn scoped_embedded_chunks(
-        &self,
-        request: &SemanticIndexRequest<'_>,
-        cancellation: &SemanticCancellationToken,
-    ) -> Result<Vec<EmbeddedChunk>> {
-        let scope = request
-            .scope
-            .iter()
-            .map(|candidate| (candidate.index, candidate.source))
-            .collect::<HashSet<_>>();
-        let mut chunks = Vec::new();
-        for chunk in &self.embedded_chunks {
-            if cancellation.is_cancelled() {
-                return Err(AppError::SemanticSearchCancelled);
-            }
-            if scope.contains(&(chunk.embedded.conversation_index, chunk.embedded.source)) {
-                chunks.push(chunk.embedded.clone());
-            }
-        }
-        Ok(chunks)
     }
 }
 
@@ -408,6 +360,7 @@ fn semantic_chunks(
     candidate_chunks(request.scope, chunk_config)
 }
 
+#[cfg(test)]
 fn full_corpus_chunks(
     request: &SemanticIndexRequest<'_>,
     chunk_config: ChunkConfig,
@@ -415,6 +368,7 @@ fn full_corpus_chunks(
     candidate_chunks(request.full_corpus, chunk_config)
 }
 
+#[cfg(test)]
 fn candidate_chunks(
     candidates: &[SemanticIndexCandidate],
     chunk_config: ChunkConfig,
@@ -429,29 +383,6 @@ fn candidate_chunks(
         }),
         chunk_config,
     )
-}
-
-fn semantic_index_signature(
-    request: &SemanticIndexRequest<'_>,
-    chunk_config: ChunkConfig,
-) -> SemanticIndexSignature {
-    let conversations = request
-        .full_corpus
-        .iter()
-        .map(|candidate| ConversationSignature {
-            index: candidate.index,
-            source: candidate.source,
-            path: candidate.conversation.path.clone(),
-            semantic_turns: candidate.conversation.semantic_turns.clone(),
-            semantic_turn_ranges: candidate.conversation.semantic_turn_ranges.clone(),
-        })
-        .collect();
-
-    SemanticIndexSignature {
-        corpus_version: request.corpus_version,
-        chunk_config,
-        conversations,
-    }
 }
 
 #[cfg(test)]
@@ -534,10 +465,11 @@ mod tests {
             scope: candidates,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         }
     }
 
-    fn cache_passage(cache: &mut EmbeddingCache, _key: String, text: String, embedding: Vec<f32>) {
+    fn cache_passage(cache: &mut EmbeddingCache, text: String, embedding: Vec<f32>) {
         cache.entries.insert(
             crate::semantic::cache::embedding_cache_key(&text),
             CachedChunk {
@@ -568,7 +500,7 @@ mod tests {
                 "visible alpha" => vec![1.0, 0.0],
                 _ => vec![0.5, 0.5],
             };
-            cache_passage(cache, chunk.key, chunk.text, embedding);
+            cache_passage(cache, chunk.text, embedding);
         }
     }
 
@@ -659,6 +591,7 @@ mod tests {
         let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
 
         assert_hit_indices(&response, &[1, 0]);
+        assert!(response.chunk_hits.is_empty());
         let metadata = response
             .hits
             .iter()
@@ -667,6 +600,23 @@ mod tests {
         let (expected_score_breakdown, expected_explanation) = beta_hit_metadata(1, "session-b");
         assert_eq!(metadata.score_breakdown, expected_score_breakdown);
         assert_eq!(metadata.explanation, expected_explanation);
+    }
+
+    #[test]
+    fn chunk_hit_materialization_is_opt_in() {
+        let conversations = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+        ];
+        let candidates = candidates_from(&conversations);
+        let mut request = index_request("alpha", &candidates);
+        request.include_chunk_hits = true;
+        let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
+
+        let response = run_refresh(&mut state, &request, &mut embedder).expect("rank succeeds");
+
+        assert_eq!(response.hits.len(), 2);
+        assert_eq!(response.chunk_hits.len(), 2);
     }
 
     #[test]
@@ -684,6 +634,7 @@ mod tests {
             scope: &all,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
@@ -710,6 +661,7 @@ mod tests {
             scope: &all,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let config = ChunkConfig {
             target_chars: 30,
@@ -723,7 +675,7 @@ mod tests {
             } else {
                 vec![0.5, 0.5]
             };
-            cache_passage(&mut cache, chunk.key, chunk.text, embedding);
+            cache_passage(&mut cache, chunk.text, embedding);
         }
         let mut state = SemanticIndexState::with_cache(config, cache);
         let mut embedder = FakeEmbedder::new();
@@ -764,6 +716,7 @@ mod tests {
             scope: &all,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
@@ -834,6 +787,7 @@ mod tests {
             scope: &visible,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) = prepare_indexed_state(&request, ChunkConfig::default());
 
@@ -979,12 +933,7 @@ mod tests {
             .into_iter()
             .find(|chunk| chunk.text == "visible alpha")
             .expect("alpha chunk");
-        cache_passage(
-            &mut cache,
-            first_chunk.key,
-            first_chunk.text,
-            vec![1.0, 0.0],
-        );
+        cache_passage(&mut cache, first_chunk.text, vec![1.0, 0.0]);
         let mut state = SemanticIndexState::with_cache(ChunkConfig::default(), cache);
         let mut embedder = FakeEmbedder::new();
         let mut progress = Vec::new();
@@ -1086,6 +1035,7 @@ mod tests {
             scope: &candidates,
             corpus_version: 1,
             prewarm: true,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) = prepare_empty_state(ChunkConfig::default());
 
@@ -1167,6 +1117,7 @@ mod tests {
             scope: &alpha_scope,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) =
             prepare_indexed_state(&alpha_request, ChunkConfig::default());
@@ -1181,6 +1132,7 @@ mod tests {
             scope: &beta_scope,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let beta = run_refresh(&mut state, &beta_request, &mut embedder).expect("beta scope ranks");
 
@@ -1209,6 +1161,7 @@ mod tests {
             scope: &[],
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
 
         let response =
@@ -1238,6 +1191,7 @@ mod tests {
             scope: &scope,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let scoped_request = index_request(&query, &scope);
         let (mut persistent_state, mut persistent_embedder) =
@@ -1272,10 +1226,12 @@ mod tests {
             scope: &first_all,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) =
             prepare_indexed_state(&first_request, ChunkConfig::default());
         run_refresh(&mut state, &first_request, &mut embedder).expect("first corpus ranks");
+        let prepared_before_reorder = state.prepared_chunk_count();
         let reordered = vec![first[1].clone(), first[0].clone()];
         let reordered_all = candidates_from(&reordered);
         let reordered_request = SemanticIndexRequest {
@@ -1285,14 +1241,65 @@ mod tests {
             scope: &reordered_all,
             corpus_version: 2,
             prewarm: false,
+            include_chunk_hits: false,
         };
 
         let response = run_refresh(&mut state, &reordered_request, &mut embedder)
             .expect("reordered corpus ranks");
 
         assert_eq!(embedder.passage_calls, 0);
+        assert_eq!(state.prepared_chunk_count(), prepared_before_reorder);
         assert_eq!(response.hits[0].conversation_index, 1);
         assert_eq!(response.hits[0].session, "session-a");
+    }
+
+    #[test]
+    fn front_insertion_prepares_only_the_new_conversation() {
+        let original = vec![
+            conversation("/projects/project-a/session-a.jsonl", vec!["visible alpha"]),
+            conversation("/projects/project-a/session-b.jsonl", vec!["visible beta"]),
+        ];
+        let original_candidates = candidates_from(&original);
+        let original_request = index_request("alpha", &original_candidates);
+        let (mut state, mut embedder) =
+            prepare_indexed_state(&original_request, ChunkConfig::default());
+        run_refresh(&mut state, &original_request, &mut embedder).expect("initial corpus ranks");
+        let prepared_before_insert = state.prepared_chunk_count();
+
+        let updated = vec![
+            conversation(
+                "/projects/project-a/session-new.jsonl",
+                vec!["visible gamma"],
+            ),
+            original[0].clone(),
+            original[1].clone(),
+        ];
+        let updated_candidates = candidates_from(&updated);
+        let updated_request = SemanticIndexRequest {
+            query: "alpha",
+            literal_filters: &[],
+            full_corpus: &updated_candidates,
+            scope: &updated_candidates,
+            corpus_version: 2,
+            prewarm: false,
+            include_chunk_hits: false,
+        };
+
+        let response = run_refresh(&mut state, &updated_request, &mut embedder)
+            .expect("expanded corpus ranks");
+
+        assert_eq!(embedder.passage_calls, 1);
+        assert_eq!(state.prepared_chunk_count(), prepared_before_insert + 1);
+        assert_eq!(response.indexed_chunk_count, 3);
+        assert_eq!(
+            response
+                .hits
+                .iter()
+                .find(|hit| hit.session == "session-a")
+                .unwrap()
+                .conversation_index,
+            1
+        );
     }
 
     #[test]
@@ -1310,6 +1317,7 @@ mod tests {
             scope: &first_all,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) =
             prepare_indexed_state(&first_request, ChunkConfig::default());
@@ -1327,6 +1335,7 @@ mod tests {
             scope: &updated_all,
             corpus_version: 2,
             prewarm: false,
+            include_chunk_hits: false,
         };
 
         run_refresh(&mut state, &updated_request, &mut embedder).expect("updated corpus ranks");
@@ -1357,6 +1366,7 @@ mod tests {
             scope: &first_all,
             corpus_version: 1,
             prewarm: false,
+            include_chunk_hits: false,
         };
         let (mut state, mut embedder) =
             prepare_indexed_state(&first_request, ChunkConfig::default());
@@ -1370,6 +1380,7 @@ mod tests {
             scope: &updated_all,
             corpus_version: 2,
             prewarm: false,
+            include_chunk_hits: false,
         };
 
         let response = run_refresh(&mut state, &updated_request, &mut embedder)
@@ -1427,13 +1438,12 @@ mod tests {
         let (empty_query, empty_candidates) = request("alpha", empty, vec![0]);
         let empty_request = index_request(&empty_query, &empty_candidates);
 
-        let empty_signature = semantic_index_signature(&empty_request, ChunkConfig::default());
         state
             .clear_empty(&empty_request, &SemanticCancellationToken::new())
             .unwrap();
 
-        assert_eq!(state.signature, Some(empty_signature));
-        assert!(state.embedded_chunks.is_empty());
+        assert!(state.signature_matches(&empty_request));
+        assert_eq!(state.resident_conversation_count(), 0);
         assert!(
             !state
                 .has_chunks(&empty_request, &SemanticCancellationToken::new())

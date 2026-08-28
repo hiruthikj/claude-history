@@ -945,6 +945,7 @@ fn run_agent_semantic_hits_for_candidates(
         scope: candidates,
         corpus_version: 3,
         prewarm: false,
+        include_chunk_hits: true,
     };
     let mut state = semantic::index::SemanticIndexState::new();
     let mut embedder = semantic::fastembed::FastembedEmbedder::new().map_err(|error| {

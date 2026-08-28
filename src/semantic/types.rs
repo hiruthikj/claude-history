@@ -77,7 +77,6 @@ pub struct SemanticChunk {
     pub source: SemanticChunkSource,
     pub session: String,
     pub chunk_index: usize,
-    pub key: String,
     pub text: String,
     pub message_range: MessageRange,
 }
@@ -88,7 +87,6 @@ pub struct EmbeddedChunk {
     pub source: SemanticChunkSource,
     pub session: String,
     pub chunk_index: usize,
-    pub key: String,
     pub text: String,
     pub message_range: MessageRange,
     pub embedding: Vec<f32>,

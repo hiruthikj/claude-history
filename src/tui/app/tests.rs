@@ -833,6 +833,35 @@ fn semantic_search_applies_lexical_fallback_while_pending() {
 }
 
 #[test]
+fn empty_lexical_fallback_keeps_results_visible_while_semantic_search_is_pending() {
+    let mut app = app_with_semantic_mode(vec![conversation(
+        Some("Visible"),
+        "-tmp-visible",
+        "22222222-2222-4222-8222-222222222222",
+        "needle",
+    )]);
+    let (tx, rx) = mpsc::channel();
+    app.search_rx = rx;
+    app.search_generation = 7;
+    app.semantic_search.pending_generation = Some(7);
+    app.semantic_search.results = HashMap::from([(0, test_semantic_metadata(0, "old"))]);
+    app.filtered = vec![0];
+    app.selected = Some(0);
+    tx.send(SearchResponse {
+        filtered: Vec::new(),
+        generation: 7,
+        mode: ListSearchMode::Semantic,
+        evidence: HashMap::new(),
+    })
+    .unwrap();
+
+    assert!(!app.receive_search_results());
+    assert_eq!(app.filtered(), &[0]);
+    assert_eq!(app.selected(), Some(0));
+    assert!(app.semantic_search.results.contains_key(&0));
+}
+
+#[test]
 fn semantic_search_ignores_lexical_fallback_after_completion() {
     let mut app = app_with_semantic_mode(vec![conversation(
         Some("Visible"),
@@ -900,6 +929,17 @@ fn semantic_keypress_does_not_clone_full_corpus_on_ui_thread() {
     }
     let request = last_semantic_search(&commands).expect("semantic search");
     assert_eq!(request.1, "n");
+
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, 10);
+
+    let commands = drain_semantic_commands(&request_rx);
+    assert!(
+        commands
+            .iter()
+            .all(|command| matches!(command, SemanticWorkerCommand::Search { .. }))
+    );
+    let request = last_semantic_search(&commands).expect("semantic search");
+    assert_eq!(request.1, "ne");
 }
 
 #[test]

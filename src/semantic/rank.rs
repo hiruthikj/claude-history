@@ -4,8 +4,179 @@ use crate::semantic::types::{
     EmbeddedChunk, SemanticChunkIdentity, SemanticExplanation, SemanticHit, SemanticQuality,
     SemanticRationaleKind, SemanticScoreBreakdown,
 };
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+
+#[derive(Clone, Debug)]
+pub struct PreparedText {
+    lower: Box<str>,
+    norm: f32,
+}
+
+impl PreparedText {
+    pub fn new(chunk: &EmbeddedChunk) -> Self {
+        Self {
+            lower: chunk.text.to_lowercase().into_boxed_str(),
+            norm: vector_norm(&chunk.embedding),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PreparedChunk<'a> {
+    pub chunk: &'a EmbeddedChunk,
+    pub prepared: &'a PreparedText,
+}
+
+pub struct RankedHits {
+    pub conversations: Vec<SemanticHit>,
+    pub chunks: Vec<SemanticHit>,
+}
+
+#[derive(Clone, Copy)]
+struct ScoredChunk<'a> {
+    chunk: &'a EmbeddedChunk,
+    score: SemanticScoreBreakdown,
+}
+
+struct QueryContext<'a> {
+    query: &'a str,
+    embedding: &'a [f32],
+    norm: f32,
+    words_lower: Vec<String>,
+}
+
+impl<'a> QueryContext<'a> {
+    fn new(query: &'a str, embedding: &'a [f32]) -> Self {
+        Self {
+            query,
+            embedding,
+            norm: vector_norm(embedding),
+            words_lower: query
+                .split_whitespace()
+                .map(|word| word.to_lowercase())
+                .collect(),
+        }
+    }
+
+    fn score<'c>(&self, input: PreparedChunk<'c>) -> ScoredChunk<'c> {
+        let semantic = cosine_prepared(
+            self.embedding,
+            self.norm,
+            &input.chunk.embedding,
+            input.prepared.norm,
+        );
+        let lexical = lexical_overlap_prepared(&self.words_lower, &input.prepared.lower);
+        ScoredChunk {
+            chunk: input.chunk,
+            score: SemanticScoreBreakdown {
+                hybrid: semantic + lexical,
+                semantic,
+                lexical,
+            },
+        }
+    }
+
+    fn materialize(&self, scored: ScoredChunk<'_>) -> SemanticHit {
+        let quality = quality_for_score(scored.score.hybrid);
+        let chunk = scored.chunk;
+        SemanticHit::new(
+            scored.score,
+            SemanticExplanation {
+                quality,
+                quality_label: quality.label(),
+                matched_terms: matched_terms(self.query, &chunk.text),
+                evidence_preview: evidence_preview(&chunk.text),
+                rationale_kind: rationale_kind(scored.score),
+                chunk: SemanticChunkIdentity {
+                    conversation_index: chunk.conversation_index,
+                    source: chunk.source,
+                    session: chunk.session.clone(),
+                    chunk_index: chunk.chunk_index,
+                    message_range: chunk.message_range,
+                },
+            },
+        )
+    }
+}
+
+pub fn rank_prepared(
+    query: &str,
+    query_embedding: &[f32],
+    chunks: &[PreparedChunk<'_>],
+    include_chunk_hits: bool,
+    cancellation: &crate::semantic::types::SemanticCancellationToken,
+) -> Result<RankedHits> {
+    if query_embedding.is_empty() || query_embedding.iter().any(|value| !value.is_finite()) {
+        return Err(AppError::ConfigError(
+            "semantic query embedding is empty or contains non-finite values".to_string(),
+        ));
+    }
+    let context = QueryContext::new(query, query_embedding);
+    let mut scored = chunks
+        .par_iter()
+        .map(|input| {
+            if cancellation.is_cancelled() {
+                return Err(AppError::SemanticSearchCancelled);
+            }
+            if input.chunk.embedding.len() != query_embedding.len()
+                || input.chunk.embedding.iter().any(|value| !value.is_finite())
+            {
+                return Err(AppError::ConfigError(format!(
+                    "semantic passage embedding for {}:{} is invalid: expected {} finite dimensions, got {}",
+                    input.chunk.session,
+                    input.chunk.chunk_index,
+                    query_embedding.len(),
+                    input.chunk.embedding.len()
+                )));
+            }
+            Ok(context.score(*input))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut best = HashMap::<usize, ScoredChunk<'_>>::new();
+    for candidate in &scored {
+        best.entry(candidate.chunk.conversation_index)
+            .and_modify(|current| {
+                if compare_scored(candidate, current).is_lt() {
+                    *current = *candidate;
+                }
+            })
+            .or_insert(*candidate);
+    }
+    let mut conversation_scores = best.into_values().collect::<Vec<_>>();
+    conversation_scores.sort_by(compare_scored);
+    let conversations = conversation_scores
+        .into_par_iter()
+        .map(|candidate| {
+            if cancellation.is_cancelled() {
+                return Err(AppError::SemanticSearchCancelled);
+            }
+            Ok(context.materialize(candidate))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let chunks = if include_chunk_hits {
+        scored.par_sort_by(compare_scored);
+        scored
+            .into_par_iter()
+            .map(|candidate| {
+                if cancellation.is_cancelled() {
+                    return Err(AppError::SemanticSearchCancelled);
+                }
+                Ok(context.materialize(candidate))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
+    Ok(RankedHits {
+        conversations,
+        chunks,
+    })
+}
 
 pub fn rank_chunks(
     query: &str,
@@ -13,78 +184,24 @@ pub fn rank_chunks(
     chunks: &[EmbeddedChunk],
     cancellation: &crate::semantic::types::SemanticCancellationToken,
 ) -> Result<Vec<SemanticHit>> {
-    let chunk_hits = rank_chunk_hits(query, query_embedding, chunks, cancellation)?;
-    Ok(rank_conversation_hits(&chunk_hits))
+    let prepared = chunks.iter().map(PreparedText::new).collect::<Vec<_>>();
+    let inputs = chunks
+        .iter()
+        .zip(&prepared)
+        .map(|(chunk, prepared)| PreparedChunk { chunk, prepared })
+        .collect::<Vec<_>>();
+    Ok(rank_prepared(query, query_embedding, &inputs, false, cancellation)?.conversations)
 }
 
-pub fn rank_conversation_hits(chunk_hits: &[SemanticHit]) -> Vec<SemanticHit> {
-    let mut seen = HashMap::new();
-    for hit in chunk_hits {
-        seen.entry(hit.conversation_index)
-            .or_insert_with(|| hit.clone());
-    }
-
-    let mut hits = seen.into_values().collect::<Vec<_>>();
-    hits.sort_by(compare_hits);
-    hits
-}
-
-pub fn rank_chunk_hits(
-    query: &str,
-    query_embedding: &[f32],
-    chunks: &[EmbeddedChunk],
-    cancellation: &crate::semantic::types::SemanticCancellationToken,
-) -> Result<Vec<SemanticHit>> {
-    let mut hits = Vec::new();
-    for chunk in chunks {
-        if cancellation.is_cancelled() {
-            return Err(AppError::SemanticSearchCancelled);
-        }
-        let semantic_score = cosine(query_embedding, &chunk.embedding);
-        let lexical_score = lexical_overlap(query, &chunk.text);
-        let score_breakdown = SemanticScoreBreakdown {
-            hybrid: semantic_score + lexical_score,
-            semantic: semantic_score,
-            lexical: lexical_score,
-        };
-        let quality = quality_for_score(score_breakdown.hybrid);
-        let explanation = SemanticExplanation {
-            quality,
-            quality_label: quality.label(),
-            matched_terms: matched_terms(query, &chunk.text),
-            evidence_preview: evidence_preview(&chunk.text),
-            rationale_kind: rationale_kind(score_breakdown),
-            chunk: SemanticChunkIdentity {
-                conversation_index: chunk.conversation_index,
-                source: chunk.source,
-                session: chunk.session.clone(),
-                chunk_index: chunk.chunk_index,
-                message_range: chunk.message_range,
-            },
-        };
-        hits.push(SemanticHit::new(score_breakdown, explanation));
-    }
-    hits.sort_by(compare_hits);
-    Ok(hits)
-}
-
-fn compare_hits(a: &SemanticHit, b: &SemanticHit) -> Ordering {
-    b.score_breakdown
+fn compare_scored(a: &ScoredChunk<'_>, b: &ScoredChunk<'_>) -> Ordering {
+    b.score
         .hybrid
-        .total_cmp(&a.score_breakdown.hybrid)
-        .then_with(|| {
-            b.score_breakdown
-                .semantic
-                .total_cmp(&a.score_breakdown.semantic)
-        })
-        .then_with(|| {
-            b.score_breakdown
-                .lexical
-                .total_cmp(&a.score_breakdown.lexical)
-        })
-        .then_with(|| a.conversation_index.cmp(&b.conversation_index))
-        .then_with(|| a.session.cmp(&b.session))
-        .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+        .total_cmp(&a.score.hybrid)
+        .then_with(|| b.score.semantic.total_cmp(&a.score.semantic))
+        .then_with(|| b.score.lexical.total_cmp(&a.score.lexical))
+        .then_with(|| a.chunk.conversation_index.cmp(&b.chunk.conversation_index))
+        .then_with(|| a.chunk.session.cmp(&b.chunk.session))
+        .then_with(|| a.chunk.chunk_index.cmp(&b.chunk.chunk_index))
 }
 
 fn quality_for_score(hybrid_score: f32) -> SemanticQuality {
@@ -109,37 +226,25 @@ fn rationale_kind(score_breakdown: SemanticScoreBreakdown) -> SemanticRationaleK
     }
 }
 
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    let mut dot = 0.0;
-    let mut norm_a = 0.0;
-    let mut norm_b = 0.0;
-
-    for (x, y) in a.iter().zip(b) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-    }
-
-    if norm_a == 0.0 || norm_b == 0.0 {
-        0.0
-    } else {
-        dot / (norm_a.sqrt() * norm_b.sqrt())
-    }
+fn vector_norm(values: &[f32]) -> f32 {
+    values.iter().map(|value| value * value).sum::<f32>().sqrt()
 }
 
-fn lexical_overlap(query: &str, text: &str) -> f32 {
-    let query_words = query
-        .split_whitespace()
-        .map(|word| word.to_lowercase())
-        .collect::<Vec<_>>();
+fn cosine_prepared(a: &[f32], norm_a: f32, b: &[f32], norm_b: f32) -> f32 {
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    let dot = a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    dot / (norm_a * norm_b)
+}
+
+fn lexical_overlap_prepared(query_words: &[String], text_lower: &str) -> f32 {
     if query_words.is_empty() {
         return 0.0;
     }
-
-    let text = text.to_lowercase();
     let matches = query_words
         .iter()
-        .filter(|word| text.contains(word.as_str()))
+        .filter(|word| text_lower.contains(word.as_str()))
         .count();
     0.2 * matches as f32 / query_words.len() as f32
 }
@@ -161,7 +266,6 @@ mod tests {
             source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
             session: session.to_string(),
             chunk_index,
-            key: format!("{session}:{chunk_index}"),
             text: text.to_string(),
             message_range: crate::agent::refs::MessageRange::single(chunk_index + 1),
             embedding,

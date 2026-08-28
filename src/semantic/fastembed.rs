@@ -32,7 +32,8 @@ impl FastembedEmbedder {
         let model = TextEmbedding::try_new(
             TextInitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir)
-                .with_show_download_progress(show_download_progress),
+                .with_show_download_progress(show_download_progress)
+                .with_intra_threads(1),
         )
         .map_err(to_config_error)?;
         Ok(Self { model })
