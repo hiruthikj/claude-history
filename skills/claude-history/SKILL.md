@@ -99,6 +99,32 @@ its visibility policy: add each corresponding CLI flag for `=true`, and leave
 `=false` categories hidden. Do not treat hit order, scores, ranks, or chunks as
 stable addresses.
 
+Search and within hit records with semantic evidence include optional score atoms:
+
+```text
+score=0.016393 hybrid=0.969000 semantic=0.769000 lexical=0.200000
+```
+
+`score=` retains the search path's ranking score: global semantic and hybrid
+search use conversation-level reciprocal-rank fusion, semantic within uses the
+combined similarity, and lexical/exact retrieval uses its own score. Hybrid
+fallback uses lexical retrieval scores even when the header says `mode=hybrid`.
+`semantic=` is cosine similarity, `lexical=` is the semantic ranker's word-overlap
+bonus (0 to 0.2), and `hybrid=` is their sum. The overlap bonus is distinct from
+the lexical retrieval score. The three atoms are omitted together when semantic
+evidence is unavailable; zero denotes a measured value, not missing data.
+
+A ranked conversation record summarizes its first retained hit, so it can omit
+these atoms even when a secondary hit has semantic evidence. Route-only ranking
+signals do not supply displayed breakdowns. Merged hits retain one contributing
+semantic chunk's complete breakdown; its preview or content source can differ
+from the retained lexical preview at the same focus range.
+
+Similarity indicates match strength, not calibrated confidence or cache freshness.
+Cosine can be negative and the combined value can exceed 1. Result order need not
+follow similarity, so do not stop automatically at the first score drop. Parse
+records by named atoms and tolerate additional optional fields.
+
 The `project=pr_...` plus `uuid=...` pair is reporting identity. Commands continue to accept
 the collision-safe opaque `ref=ch_...` handle. Full UUIDs and UUID-based session filenames are also accepted when unambiguous.
 Canonical `mN` ordinals are ergonomic message addresses. Content-derived

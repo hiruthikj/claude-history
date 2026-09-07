@@ -116,6 +116,7 @@ pub struct AgentOutputHit {
     pub title: String,
     pub score: f64,
     pub evidence_score: f64,
+    pub semantic_score_breakdown: Option<SemanticScoreBreakdown>,
     pub source: AgentHitKind,
     pub evidence_source: AgentHitSource,
     pub render_options: AgentHitRenderOptions,
@@ -256,12 +257,13 @@ pub fn format_agent_output_with_warnings(
         rendered.push_str(&format!("groups count={}\n", output.groups.len()));
         for (index, group) in output.groups.iter().enumerate() {
             rendered.push_str(&format!(
-                "conversation rank={} project={} uuid={} ref={} score={:.6} hits={} total={} | {}\n",
+                "conversation rank={} project={} uuid={} ref={} score={:.6}{} hits={} total={} | {}\n",
                 index + 1,
                 crate::agent::protocol::escape_atom(&group.project_id),
                 crate::agent::protocol::escape_atom(&group.conversation_uuid),
                 crate::agent::protocol::escape_atom(&group.conversation_ref),
                 group.score,
+                score_breakdown_atoms(group.hits.first().and_then(|hit| hit.semantic_score_breakdown)),
                 group.hits.len(),
                 group.total_hits,
                 protocol_snippet(&group.title, AGENT_SEARCH_TITLE_CHARS)
@@ -367,15 +369,25 @@ fn output_hits(output: &AgentSearchOutput) -> Vec<&AgentOutputHit> {
     }
 }
 
+fn score_breakdown_atoms(breakdown: Option<SemanticScoreBreakdown>) -> String {
+    breakdown.map_or_else(String::new, |score| {
+        format!(
+            " hybrid={:.6} semantic={:.6} lexical={:.6}",
+            score.hybrid, score.semantic, score.lexical
+        )
+    })
+}
+
 fn push_hit_lines(rendered: &mut String, hit: &AgentOutputHit) {
     rendered.push_str(&format!(
-        "hit project={} uuid={} ref={} anchors={} source={} score={:.6} focus=m{}..m{} | {}\n",
+        "hit project={} uuid={} ref={} anchors={} source={} score={:.6}{} focus=m{}..m{} | {}\n",
         crate::agent::protocol::escape_atom(&hit.project_id),
         crate::agent::protocol::escape_atom(&hit.conversation_uuid),
         crate::agent::protocol::escape_atom(&hit.conversation_ref),
         hit.anchors.join(","),
         output_source_atom(hit),
         hit.score,
+        score_breakdown_atoms(hit.semantic_score_breakdown),
         hit.focus_range.start,
         hit.focus_range.end,
         protocol_snippet(&hit.preview, AGENT_SEARCH_HIT_CHARS)
@@ -755,6 +767,7 @@ fn retrieval_output_hit(
         title: title_for_conversation(conversation),
         score: hit.score,
         evidence_score: hit.score,
+        semantic_score_breakdown: None,
         source: if mode == SearchMode::Exact || ParsedQuery::parse(&hit.preview).is_quoted_only() {
             AgentHitKind::Exact
         } else {
@@ -812,6 +825,7 @@ fn semantic_output_hit_candidates(
                 title: title_for_conversation(input.conversation),
                 score: semantic_score(hit.score_breakdown),
                 evidence_score: semantic_score(hit.score_breakdown),
+                semantic_score_breakdown: Some(hit.score_breakdown),
                 source: AgentHitKind::Semantic,
                 evidence_source: semantic_evidence_source(hit.explanation.chunk.source),
                 render_options: semantic_render_options(hit.explanation.chunk.source),
@@ -1004,11 +1018,35 @@ fn same_evidence_identity(existing: &AgentOutputHit, candidate: &AgentOutputHit)
         && existing.evidence_source == candidate.evidence_source
 }
 
+/// Keep all components from one contributing chunk, selected by semantic ranker score.
+fn merge_score_breakdown(
+    existing: &mut Option<SemanticScoreBreakdown>,
+    candidate: Option<SemanticScoreBreakdown>,
+) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    if existing.is_none_or(|current| {
+        candidate
+            .hybrid
+            .total_cmp(&current.hybrid)
+            .then_with(|| candidate.semantic.total_cmp(&current.semantic))
+            .then_with(|| candidate.lexical.total_cmp(&current.lexical))
+            .is_gt()
+    }) {
+        *existing = Some(candidate);
+    }
+}
+
 fn merge_duplicate_hit(existing: &mut AgentOutputHit, candidate: &AgentOutputHit) {
     existing.render_options.merge(candidate.render_options);
     existing.read_range = existing.read_range.union(&candidate.read_range);
     existing.score = existing.score.max(candidate.score);
     existing.evidence_score = existing.evidence_score.max(candidate.evidence_score);
+    merge_score_breakdown(
+        &mut existing.semantic_score_breakdown,
+        candidate.semantic_score_breakdown,
+    );
 }
 
 fn sort_group_hits(hits: &mut [AgentOutputHit]) {
@@ -1111,6 +1149,10 @@ fn hybrid_hits_with_semantic_order(
         }) {
             existing.semantic_rank = Some(rank + 1);
             existing.hit.source = AgentHitKind::Hybrid;
+            merge_score_breakdown(
+                &mut existing.hit.semantic_score_breakdown,
+                hit.semantic_score_breakdown,
+            );
             existing.hit.render_options.merge(hit.render_options);
             existing.hit.read_range = existing.hit.read_range.union(&hit.read_range);
         } else {
@@ -1393,6 +1435,7 @@ mod tests {
             title: title.to_string(),
             score,
             evidence_score: score,
+            semantic_score_breakdown: None,
             source: AgentHitKind::Lexical,
             evidence_source: AgentHitSource::Dialogue,
             render_options: AgentHitRenderOptions::default(),
@@ -1419,6 +1462,7 @@ mod tests {
             title: title.to_string(),
             score,
             evidence_score: score,
+            semantic_score_breakdown: None,
             source: AgentHitKind::Lexical,
             evidence_source: AgentHitSource::Tool,
             render_options: AgentHitRenderOptions::default(),
@@ -1445,12 +1489,187 @@ mod tests {
             title: title.to_string(),
             score,
             evidence_score: score,
+            semantic_score_breakdown: Some(SemanticScoreBreakdown {
+                hybrid: score as f32,
+                semantic: score as f32,
+                lexical: 0.0,
+            }),
             source: AgentHitKind::Semantic,
             evidence_source: AgentHitSource::Dialogue,
             render_options: AgentHitRenderOptions::default(),
             preview: preview.to_string(),
             focus_range,
             read_range,
+        }
+    }
+
+    #[test]
+    fn semantic_breakdown_survives_rrf_in_every_search_layout() {
+        let conv = conversation("a.jsonl", "cache warming");
+        let resolved = resolved("a.jsonl");
+        let inputs = [AgentConversationInput {
+            conversation: &conv,
+            resolved: resolved.clone(),
+            original_index: 0,
+        }];
+        let transcript = transcript(vec![message(1, AgentMessageRole::User, "cache warming")]);
+        for breakdown in [
+            SemanticScoreBreakdown {
+                hybrid: 0.969,
+                semantic: 0.769,
+                lexical: 0.2,
+            },
+            SemanticScoreBreakdown {
+                hybrid: 0.1,
+                semantic: 0.1,
+                lexical: 0.0,
+            },
+        ] {
+            let mut semantic = semantic_hit(0, MessageRange::single(1), "cache warming", 0.0);
+            semantic.score_breakdown = breakdown;
+            let semantic = [semantic];
+            for mode in [SearchMode::Semantic, SearchMode::Hybrid] {
+                for flat in [false, true] {
+                    let global = global_request("cache", mode, 10, flat);
+                    let output = if mode == SearchMode::Semantic {
+                        run_global_semantic_search(&global, &inputs, &semantic)
+                    } else {
+                        let lexical = run_within_search(
+                            &request("cache", Some(SearchMode::Lexical)),
+                            &conv,
+                            &resolved,
+                            &transcript,
+                            &[],
+                        );
+                        run_global_hybrid_search(&global, lexical, &semantic, &inputs)
+                    };
+                    let expected_score =
+                        rrf_score((mode == SearchMode::Hybrid).then_some(1), Some(1));
+                    assert_eq!(output_hits(&output)[0].score, expected_score);
+                    assert_eq!(
+                        output_hits(&output)[0].semantic_score_breakdown,
+                        Some(breakdown)
+                    );
+                    let rendered = format_agent_output(&output);
+                    for record in rendered.lines().filter(|line| {
+                        line.starts_with("hit ") || line.starts_with("conversation rank=")
+                    }) {
+                        assert!(record.contains(&score_breakdown_atoms(Some(breakdown))));
+                    }
+                }
+                let output = run_within_search(
+                    &request("cache", Some(mode)),
+                    &conv,
+                    &resolved,
+                    &transcript,
+                    &semantic,
+                );
+                assert_eq!(output.hits[0].semantic_score_breakdown, Some(breakdown));
+                assert!(
+                    format_agent_output(&output).contains(&score_breakdown_atoms(Some(breakdown)))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn score_breakdown_merge_preserves_whole_tuple_and_missing_values() {
+        let a = SemanticScoreBreakdown {
+            hybrid: 0.7,
+            semantic: 0.5,
+            lexical: 0.2,
+        };
+        let b = SemanticScoreBreakdown {
+            hybrid: 0.75,
+            semantic: 0.75,
+            lexical: 0.0,
+        };
+        for (first, second) in [(a, b), (b, a)] {
+            let mut hit = semantic_dialogue_hit(
+                "ch_a",
+                "title",
+                0.7,
+                "preview",
+                MessageRange::single(1),
+                MessageRange::single(1),
+            );
+            hit.semantic_score_breakdown = Some(first);
+            let mut candidate = hit.clone();
+            candidate.semantic_score_breakdown = Some(second);
+            merge_duplicate_hit(&mut hit, &candidate);
+            assert_eq!(hit.semantic_score_breakdown, Some(b));
+            candidate.semantic_score_breakdown = None;
+            candidate.evidence_score = 20.0;
+            merge_duplicate_hit(&mut hit, &candidate);
+            assert_eq!(hit.semantic_score_breakdown, Some(b));
+            assert_eq!(hit.evidence_score, 20.0);
+        }
+        assert_eq!(score_breakdown_atoms(None), "");
+        assert_eq!(
+            score_breakdown_atoms(Some(SemanticScoreBreakdown {
+                hybrid: 0.0,
+                semantic: -0.2,
+                lexical: 0.2,
+            })),
+            " hybrid=0.000000 semantic=-0.200000 lexical=0.200000"
+        );
+        assert!(
+            score_breakdown_atoms(Some(SemanticScoreBreakdown {
+                hybrid: 1.2,
+                semantic: 1.0,
+                lexical: 0.2,
+            }))
+            .contains("hybrid=1.200000")
+        );
+    }
+
+    #[test]
+    fn conversation_breakdown_uses_first_retained_hit() {
+        let mut lexical = lexical_dialogue_hit(
+            "ch_a",
+            "title",
+            0.02,
+            "lexical",
+            MessageRange::single(1),
+            MessageRange::single(1),
+        );
+        lexical.evidence_score = 10.0;
+        let mut semantic = semantic_dialogue_hit(
+            "ch_a",
+            "title",
+            0.9,
+            "semantic",
+            MessageRange::single(2),
+            MessageRange::single(2),
+        );
+        semantic.score = 0.02;
+        for all_hits in [false, true] {
+            for limit in [1, 2] {
+                let groups = build_conversation_groups(
+                    vec![lexical.clone(), semantic.clone()],
+                    1,
+                    limit,
+                    all_hits,
+                );
+                let output = AgentSearchOutput {
+                    protocol: AgentProtocolKind::Search,
+                    target: None,
+                    query: "cache".into(),
+                    mode: SearchMode::Hybrid,
+                    hits: vec![],
+                    groups,
+                    flat: false,
+                    budget: None,
+                    stats: AgentSearchStats::default(),
+                };
+                let rendered = format_agent_output(&output);
+                let conversation = rendered
+                    .lines()
+                    .find(|line| line.starts_with("conversation rank="))
+                    .unwrap();
+                assert!(!conversation.contains("semantic="));
+                assert_eq!(rendered.contains("semantic="), limit == 2);
+            }
         }
     }
 
@@ -1710,6 +1929,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source, AgentHitKind::Hybrid);
         assert_eq!(hits[0].preview, "lexical preview");
+        assert_eq!(hits[0].semantic_score_breakdown.unwrap().semantic, 0.9);
         assert_eq!(hits[0].read_range, MessageRange { start: 1, end: 3 });
     }
 
@@ -1880,6 +2100,7 @@ mod tests {
             title: "title a".to_string(),
             score: 10.0,
             evidence_score: 10.0,
+            semantic_score_breakdown: None,
             source: AgentHitKind::Lexical,
             evidence_source: AgentHitSource::Tool,
             render_options: AgentHitRenderOptions {
@@ -1952,6 +2173,9 @@ mod tests {
         assert!(rendered.contains("conversation rank=1 project=pr_test uuid=12345678-1234-4234-9234-123456789abc ref=ch_1234abcd5678 score=12.500000"));
         assert!(rendered.contains("hit project=pr_test uuid=12345678-1234-4234-9234-123456789abc ref=ch_1234abcd5678 anchors=ma_0000000000000000 source=lexical"));
         assert!(rendered.contains("read ref=ch_1234abcd5678:m1..m3 focus=m2..m2 tools=false tool-results=false thinking=false subagents=false\n"));
+        assert!(!rendered.contains("semantic="));
+        assert!(!rendered.contains("hybrid="));
+        assert!(!rendered.contains("lexical="));
         assert!(!rendered.contains("preview="));
         assert!(!rendered.contains("title ref=ch_1234abcd5678 text="));
     }
@@ -2174,6 +2398,20 @@ mod tests {
             resolved("b.jsonl").reference.canonical()
         );
         assert_eq!(output.groups[0].hits[0].preview, "evidence b");
+        assert_eq!(
+            output.groups[0].hits[0]
+                .semantic_score_breakdown
+                .unwrap()
+                .semantic,
+            0.8
+        );
+        assert!(
+            format_agent_output(&output)
+                .lines()
+                .find(|line| line.starts_with("conversation rank=1 "))
+                .unwrap()
+                .contains("semantic=0.800000")
+        );
         assert!(
             output
                 .groups
@@ -2500,6 +2738,12 @@ mod tests {
         request.budget = Some(900);
         let candidate_hits = (1..=2)
             .map(|ordinal| AgentOutputHit {
+                semantic_score_breakdown: Some(SemanticScoreBreakdown {
+                    hybrid: 0.969,
+                    semantic: 0.769,
+                    lexical: 0.2,
+                }),
+                source: AgentHitKind::Hybrid,
                 render_options: AgentHitRenderOptions {
                     tool_results: true,
                     ..AgentHitRenderOptions::default()
@@ -2530,6 +2774,7 @@ mod tests {
         assert!(rendered.chars().count() <= 900);
         assert!(rendered.contains("cut=tail"));
         assert!(rendered.contains("tool-results=true"));
+        assert!(rendered.contains("hybrid=0.969000 semantic=0.769000 lexical=0.200000"));
         assert_eq!(
             rendered
                 .lines()

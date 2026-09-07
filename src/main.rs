@@ -805,6 +805,7 @@ mod agent_command_tests {
                 title: "cache session".to_string(),
                 score: 12.5,
                 evidence_score: 12.5,
+                semantic_score_breakdown: None,
                 source: agent::search::AgentHitKind::Lexical,
                 evidence_source: agent::retrieval::AgentHitSource::Dialogue,
                 render_options: agent::retrieval::AgentHitRenderOptions::default(),

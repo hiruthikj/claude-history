@@ -642,3 +642,28 @@ fn uuid_qualified_focus_matches_handle_focus_across_conversations() {
     }
     assert_eq!(results[0], results[1]);
 }
+
+#[test]
+fn lexical_and_exact_search_omit_semantic_breakdowns() {
+    let config = tempfile::tempdir().expect("config");
+    write_transcript(
+        &project(config.path()).join("12345678-1234-4234-9234-123456789abc.jsonl"),
+        "cache warming",
+    );
+    for mode in ["lexical", "exact"] {
+        let output = run(
+            config.path(),
+            &["agent", "search", "--mode", mode, "cache warming"],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("hit project="));
+        for atom in [" hybrid=", " semantic=", " lexical="] {
+            assert!(!text.contains(atom), "{text}");
+        }
+    }
+}
