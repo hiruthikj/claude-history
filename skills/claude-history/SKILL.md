@@ -102,7 +102,7 @@ stable addresses.
 Search and within hit records with semantic evidence include optional score atoms:
 
 ```text
-score=0.016393 hybrid=0.969000 semantic=0.769000 lexical=0.200000
+score=0.016393 semantic=0.769000 lexical=0.200000
 ```
 
 `score=` retains the search path's ranking score: global semantic and hybrid
@@ -110,8 +110,8 @@ search use conversation-level reciprocal-rank fusion, semantic within uses the
 combined similarity, and lexical/exact retrieval uses its own score. Hybrid
 fallback uses lexical retrieval scores even when the header says `mode=hybrid`.
 `semantic=` is cosine similarity, `lexical=` is the semantic ranker's word-overlap
-bonus (0 to 0.2), and `hybrid=` is their sum. The overlap bonus is distinct from
-the lexical retrieval score. The three atoms are omitted together when semantic
+bonus (0 to 0.2). Their sum gives the combined similarity. The overlap bonus is
+distinct from the lexical retrieval score. Both atoms are omitted when semantic
 evidence is unavailable; zero denotes a measured value, not missing data.
 
 A ranked conversation record summarizes its first retained hit, so it can omit

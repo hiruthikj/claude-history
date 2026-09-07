@@ -337,9 +337,9 @@ Run `--generate-semantic-cache` to prepare visible dialogue and compact routes
 explicitly. The on-disk embedding cache is limited to 50,000 entries; generated core
 passages are protected while adaptive within-search entries use the remaining space.
 
-Agent search and within results expose `hybrid=`, `semantic=`, and `lexical=`
-when a hit has semantic evidence, alongside the existing `score=`. These are the
-combined similarity, cosine similarity, and semantic word-overlap bonus, not a
+Agent search and within results expose `semantic=` and `lexical=` when a hit
+has semantic evidence, alongside `score=`. These are cosine similarity and the
+semantic word-overlap bonus; their sum gives the combined similarity, not a
 correctness probability. Ranked conversation records summarize their first
 retained hit. See the [agent skill](skills/claude-history/SKILL.md) for field
 semantics and missing-value behavior.

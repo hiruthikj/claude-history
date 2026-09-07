@@ -372,8 +372,8 @@ fn output_hits(output: &AgentSearchOutput) -> Vec<&AgentOutputHit> {
 fn score_breakdown_atoms(breakdown: Option<SemanticScoreBreakdown>) -> String {
     breakdown.map_or_else(String::new, |score| {
         format!(
-            " hybrid={:.6} semantic={:.6} lexical={:.6}",
-            score.hybrid, score.semantic, score.lexical
+            " semantic={:.6} lexical={:.6}",
+            score.semantic, score.lexical
         )
     })
 }
@@ -1555,6 +1555,7 @@ mod tests {
                         line.starts_with("hit ") || line.starts_with("conversation rank=")
                     }) {
                         assert!(record.contains(&score_breakdown_atoms(Some(breakdown))));
+                        assert!(!record.contains(" hybrid="));
                     }
                 }
                 let output = run_within_search(
@@ -1565,6 +1566,7 @@ mod tests {
                     &semantic,
                 );
                 assert_eq!(output.hits[0].semantic_score_breakdown, Some(breakdown));
+                assert!(!format_agent_output(&output).contains(" hybrid="));
                 assert!(
                     format_agent_output(&output).contains(&score_breakdown_atoms(Some(breakdown)))
                 );
@@ -1611,15 +1613,15 @@ mod tests {
                 semantic: -0.2,
                 lexical: 0.2,
             })),
-            " hybrid=0.000000 semantic=-0.200000 lexical=0.200000"
+            " semantic=-0.200000 lexical=0.200000"
         );
-        assert!(
+        assert_eq!(
             score_breakdown_atoms(Some(SemanticScoreBreakdown {
                 hybrid: 1.2,
                 semantic: 1.0,
                 lexical: 0.2,
-            }))
-            .contains("hybrid=1.200000")
+            })),
+            " semantic=1.000000 lexical=0.200000"
         );
     }
 
@@ -2774,7 +2776,7 @@ mod tests {
         assert!(rendered.chars().count() <= 900);
         assert!(rendered.contains("cut=tail"));
         assert!(rendered.contains("tool-results=true"));
-        assert!(rendered.contains("hybrid=0.969000 semantic=0.769000 lexical=0.200000"));
+        assert!(rendered.contains("semantic=0.769000 lexical=0.200000"));
         assert_eq!(
             rendered
                 .lines()
