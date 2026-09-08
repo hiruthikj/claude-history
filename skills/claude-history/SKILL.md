@@ -34,14 +34,10 @@ claude-history agent read 01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4:m2..m4
 claude-history agent within 2026-09-08T20-20-22-361Z_01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4 "decision" --exact
 ```
 
-Identity lookup uses session discovery, not full-corpus content search. UUIDs
-are case-insensitive and must be complete. Filename spelling is exact. These
-inputs also work with `--anchor` and conversation-qualified `--focus`. Direct
-commands, like existing handles, use global discovery rather than search scope,
-time filters, or search project exclusions. Content visibility is unchanged.
-Duplicate identities return `ambiguous-ref` with candidate handles and project
-context. Retry with the intended `ch_...` handle. Never choose a duplicate
-arbitrarily. Custom non-UUID session IDs still require handles.
+Use complete UUIDs or exact filenames. `--anchor` and qualified `--focus`
+accept both. Lookup is global; search filters do not apply. For `ambiguous-ref`,
+retry with the intended candidate's `ch_...` handle. Custom non-UUID IDs require
+handles.
 
 If you do not know an identity, search first. Use semantic or hybrid search for conceptual
 recall where wording may differ:
