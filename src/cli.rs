@@ -75,7 +75,7 @@ pub struct DeleteEmptyArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
-    /// Search across all conversations
+    /// Search transcript content across all conversations (known UUID? use outline/read/within)
     Search(AgentSearchArgs),
     /// Search within one conversation
     Within(AgentWithinArgs),
@@ -165,7 +165,7 @@ pub struct AgentSearchArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct AgentWithinArgs {
-    /// Conversation reference
+    /// Conversation: ch_ handle, full UUID, or UUID-based session basename/filename
     #[arg(value_parser = non_empty_string)]
     pub conversation: String,
     /// Search query
@@ -208,7 +208,7 @@ pub struct AgentOutputFlags {
 
 #[derive(Debug, ClapArgs)]
 pub struct AgentReadArgs {
-    /// Conversation or message range refs to read
+    /// ch_ handles, full UUIDs, or UUID-based session basenames/filenames, optionally :mN..mM
     #[arg(required = true, value_parser = non_empty_string)]
     pub refs: Vec<String>,
     /// Durable message anchor to read within one conversation
@@ -232,7 +232,7 @@ pub struct AgentReadArgs {
 
 #[derive(Debug, ClapArgs)]
 pub struct AgentOutlineArgs {
-    /// Conversation reference to outline
+    /// Conversation to outline: ch_ handle, full UUID, or UUID-based session basename/filename
     #[arg(value_parser = non_empty_string)]
     pub conversation: String,
     #[command(flatten)]

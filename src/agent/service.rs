@@ -1382,18 +1382,22 @@ impl AgentService {
                 },
             )
             .collect::<Vec<_>>();
-        let protocol_focus = focus.map(|focus| {
-            let conversation_full_ref = focus.conversation.as_ref().and_then(|conversation| {
-                resolved_refs
-                    .iter()
-                    .find(|(_, resolved)| resolved.reference.full_ref().starts_with(conversation))
-                    .map(|(_, resolved)| resolved.reference.full_ref())
-            });
-            agent::protocol::ProtocolFocus {
-                conversation_full_ref,
-                range: focus.range,
-            }
-        });
+        let protocol_focus = focus
+            .map(|focus| -> Result<agent::protocol::ProtocolFocus> {
+                let conversation_full_ref = focus
+                    .conversation
+                    .as_ref()
+                    .map(|conversation| {
+                        agent::refs::resolve_conversation_ref(keys, conversation)
+                            .map(|resolved| resolved.reference.full_ref())
+                    })
+                    .transpose()?;
+                Ok(agent::protocol::ProtocolFocus {
+                    conversation_full_ref,
+                    range: focus.range,
+                })
+            })
+            .transpose()?;
         let slice = if let Some(range) = args.lines {
             Some(agent::protocol::ReadSlice::Lines(range))
         } else {

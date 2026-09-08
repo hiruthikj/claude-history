@@ -511,3 +511,134 @@ fn search_rejects_an_inverted_time_range() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn direct_uuid_and_pi_filename_inputs_preserve_agent_recipes() {
+    let config = tempfile::tempdir().unwrap();
+    let sessions = tempfile::tempdir().unwrap();
+    let uuid = "01912345-6789-7abc-8def-0123456789ab";
+    let stem = format!("2026-09-08T20-20-22-361Z_{uuid}");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi/v3-branched.jsonl"),
+        sessions.path().join(format!("{stem}.jsonl")),
+    )
+    .unwrap();
+    std::fs::write(
+        config.path().join("settings.json"),
+        serde_json::json!({"sessionDir": sessions.path()}).to_string(),
+    )
+    .unwrap();
+    let invoke = |args: &[&str]| {
+        let output = Command::new(binary())
+            .env("CLAUDE_CONFIG_DIR", config.path())
+            .env("PI_CODING_AGENT_DIR", config.path())
+            .env_remove("PI_CODING_AGENT_SESSION_DIR")
+            .env_remove("OMP_PROFILE")
+            .env_remove("PI_PROFILE")
+            .current_dir(config.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for identity in [uuid.to_owned(), stem.clone(), format!("{stem}.jsonl")] {
+        let outline = invoke(&["agent", "outline", &identity]);
+        assert!(outline.contains("active root question"));
+        let read = invoke(&[
+            "agent",
+            "read",
+            &format!("{identity}:m1..m2"),
+            "--focus",
+            &format!("{uuid}:m1"),
+        ]);
+        assert!(read.contains("active root question"));
+        assert!(!read.contains("ABANDONED_BRANCH_SENTINEL"));
+        let within = invoke(&[
+            "agent",
+            "within",
+            &identity,
+            "active root question",
+            "--exact",
+        ]);
+        let handle = first_ref(within.as_bytes());
+        let opaque = invoke(&["agent", "outline", &handle]);
+        assert_eq!(outline, opaque);
+        let anchor = within
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("anchors="))
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap();
+        let anchored = invoke(&["agent", "read", &identity, "--anchor", anchor]);
+        assert!(anchored.contains("active root question"));
+    }
+}
+
+#[test]
+fn duplicate_uuid_cli_errors_offer_resolvable_handles() {
+    let config = tempfile::tempdir().unwrap();
+    let uuid = "12345678-1234-4234-9234-123456789abc";
+    for name in ["-tmp-first", "-tmp-second"] {
+        let dir = config.path().join("projects").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_transcript(&dir.join(format!("{uuid}.jsonl")), name);
+    }
+    for args in [
+        vec!["agent", "outline", uuid],
+        vec!["agent", "read", uuid],
+        vec!["agent", "within", uuid, "answer"],
+    ] {
+        let output = run(config.path(), &args);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("kind=ambiguous-ref"));
+        assert!(error.contains("retry%20with"));
+        assert!(error.contains("-tmp-first"));
+        assert!(error.contains("-tmp-second"));
+    }
+    let missing = run(
+        config.path(),
+        &["agent", "outline", "00000000-0000-0000-0000-000000000000"],
+    );
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("kind=not-found"));
+}
+
+#[test]
+fn uuid_qualified_focus_matches_handle_focus_across_conversations() {
+    let config = tempfile::tempdir().unwrap();
+    let dir = project(config.path());
+    let first = "12345678-1234-4234-9234-123456789abc";
+    let second = "87654321-1234-4234-9234-123456789abc";
+    for uuid in [first, second] {
+        write_transcript(
+            &dir.join(format!("{uuid}.jsonl")),
+            &"bounded evidence ".repeat(100),
+        );
+    }
+    let outline = run(config.path(), &["agent", "outline", second]);
+    assert!(outline.status.success());
+    let handle = first_ref(&outline.stdout);
+    let mut results = Vec::new();
+    for focus in [format!("{second}:m1"), format!("{handle}:m1")] {
+        let output = run(
+            config.path(),
+            &[
+                "agent", "read", first, second, "--focus", &focus, "--budget", "1200",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        results.push(output.stdout);
+    }
+    assert_eq!(results[0], results[1]);
+}

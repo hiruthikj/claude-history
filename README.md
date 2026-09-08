@@ -87,6 +87,30 @@ search across all transcripts. Each item shows a preview of the conversation.
 Quoted exact matches also show hidden context when the match is not visible in
 the preview.
 
+### Agent conversation identity lookup
+
+When you already know a session UUID, skip content search:
+
+```sh
+claude-history agent outline 01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4
+claude-history agent read 01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4:m2..m4
+claude-history agent within 2026-09-08T20-20-22-361Z_01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4 "decision" --exact
+```
+
+`read`, `outline`, and `within` accept existing `ch_...` handles, complete
+case-insensitive UUIDs, and exact UUID-based session basenames or `.jsonl`
+filenames, including Pi timestamp prefixes. Paths and partial UUIDs are not
+accepted. `read --anchor` and conversation-qualified `--focus` support the same
+identities; output recipes continue to use collision-safe handles.
+
+Duplicate identities fail with `ambiguous-ref`, candidate handles, and project
+context. Retry with the intended handle rather than guessing. Direct lookup
+uses global session discovery, as handle lookup does, without search scope,
+time filters, or search project exclusions. Visibility flags still apply.
+Custom non-UUID IDs require handles. `agent search --mode exact` remains a
+transcript-content search, not an identity lookup. See the bundled
+[agent skill](skills/claude-history/SKILL.md) for retrieval and safety guidance.
+
 ### Pi coding-agent sessions
 
 Pi sessions work alongside other sources in every history surface. When multiple

@@ -25,7 +25,25 @@ claude-history agent read ch_1234abcd5678:m7..m9 --focus m8..m8
 claude-history agent read ch_1234abcd5678 --anchor ma_0123456789abcdef
 ```
 
-If you need a handle, search first. Use semantic or hybrid search for conceptual
+If you know a full session UUID, use it directly. Pi timestamped session basenames
+and `.jsonl` filenames also work (exact filename matching, not filesystem paths):
+
+```sh
+claude-history agent outline 01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4
+claude-history agent read 01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4:m2..m4
+claude-history agent within 2026-09-08T20-20-22-361Z_01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4 "decision" --exact
+```
+
+Identity lookup uses session discovery, not full-corpus content search. UUIDs
+are case-insensitive and must be complete. Filename spelling is exact. These
+inputs also work with `--anchor` and conversation-qualified `--focus`. Direct
+commands, like existing handles, use global discovery rather than search scope,
+time filters, or search project exclusions. Content visibility is unchanged.
+Duplicate identities return `ambiguous-ref` with candidate handles and project
+context. Retry with the intended `ch_...` handle. Never choose a duplicate
+arbitrarily. Custom non-UUID session IDs still require handles.
+
+If you do not know an identity, search first. Use semantic or hybrid search for conceptual
 recall where wording may differ:
 
 ```sh
@@ -33,7 +51,8 @@ claude-history agent search "deployment rollback decision" --mode hybrid --top 5
 claude-history agent search "why the cache invalidation approach changed" --mode semantic --top 5
 ```
 
-Use lexical or exact search for identifiers, filenames, commands, errors, stack
+Search (including `--mode exact`) matches transcript content, not session identity.
+Use lexical or exact search for mentioned identifiers, filenames, commands, errors, stack
 traces, and quoted text:
 
 ```sh
@@ -84,8 +103,8 @@ its visibility policy: add each corresponding CLI flag for `=true`, and leave
 `=false` categories hidden. Do not treat hit order, scores, ranks, or chunks as
 stable addresses.
 
-The `project=pr_...` plus `uuid=...` pair is reporting identity. Commands accept
-the collision-safe opaque `ref=ch_...` handle. Bare UUIDs are not command refs.
+The `project=pr_...` plus `uuid=...` pair is reporting identity. Commands continue to accept
+the collision-safe opaque `ref=ch_...` handle. Full UUIDs and UUID-based session filenames are also accepted when unambiguous.
 Canonical `mN` ordinals are ergonomic message addresses. Content-derived
 `ma_...` anchors survive unrelated earlier insertions and provide durable direct
 reads. Duplicate normalized content returns `ambiguous-ref`, missing anchors

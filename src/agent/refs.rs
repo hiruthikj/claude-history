@@ -23,8 +23,10 @@ pub struct AgentConversationRef {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ConversationRefInput {
-    digest_prefix_hex: String,
+enum ConversationRefInput {
+    Digest(String),
+    Uuid(String),
+    Filename(String),
 }
 
 impl AgentConversationRef {
@@ -55,10 +57,6 @@ impl AgentConversationRef {
 
     pub fn uuid(&self) -> String {
         self.uuid.clone()
-    }
-
-    fn matches_input(&self, input: &ConversationRefInput) -> bool {
-        self.digest_hex.starts_with(&input.digest_prefix_hex)
     }
 }
 
@@ -314,7 +312,17 @@ pub fn resolve_conversation_ref(
     let input = validate_conversation_ref(reference)?;
     let matches: Vec<ResolvedConversation> = keys
         .iter()
-        .filter(|key| key.conversation_ref().matches_input(&input))
+        .filter(|key| match &input {
+            ConversationRefInput::Digest(prefix) => {
+                key.conversation_ref().digest_hex.starts_with(prefix)
+            }
+            ConversationRefInput::Uuid(uuid) => {
+                key.conversation_ref().uuid().eq_ignore_ascii_case(uuid)
+            }
+            ConversationRefInput::Filename(stem) => {
+                key.session_filename.strip_suffix(".jsonl") == Some(stem.as_str())
+            }
+        })
         .map(|key| resolved_conversation_for_key(keys, key))
         .collect();
 
@@ -407,19 +415,28 @@ fn finish_resolution(
         [] => Err(AgentError::new(
             AgentErrorKind::NotFound,
             Some(reference),
-            format!("conversation ref {reference} was not found"),
+            format!("conversation ref {reference} was not found in discovered sessions; check the full UUID or exact filename and configured session storage roots"),
         )
         .into()),
         _ => {
             let candidates = matches
                 .iter()
-                .map(|m| format!("{} {}", m.reference.canonical(), m.key.session_filename))
+                .map(|m| {
+                    format!(
+                        "{} project={} source={} directory={} file={}",
+                        m.reference.canonical(),
+                        m.key.project_id(),
+                        m.key.source.label(),
+                        m.key.project_dir_name,
+                        m.key.session_filename
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n  ");
             Err(AgentError::new(
                 AgentErrorKind::AmbiguousRef,
                 Some(reference),
-                format!("ambiguous conversation ref; candidates: {candidates}"),
+                format!("ambiguous conversation ref; retry with one of these ch_ handles; candidates: {candidates}"),
             )
             .into())
         }
@@ -462,12 +479,22 @@ fn validate_conversation_ref(reference: &str) -> Result<ConversationRefInput> {
             )
             .into());
         }
-        return Ok(ConversationRefInput {
-            digest_prefix_hex: hex.to_ascii_lowercase(),
-        });
+        return Ok(ConversationRefInput::Digest(hex.to_ascii_lowercase()));
     }
 
-    Err(AgentError::invalid_ref(reference, "use ref=ch_... from agent search output").into())
+    if is_uuid(reference) {
+        return Ok(ConversationRefInput::Uuid(reference.to_ascii_lowercase()));
+    }
+    let stem = reference.strip_suffix(".jsonl").unwrap_or(reference);
+    if !stem.contains(['/', '\\'])
+        && (is_uuid(stem)
+            || stem
+                .rsplit_once('_')
+                .is_some_and(|(prefix, uuid)| !prefix.is_empty() && is_uuid(uuid)))
+    {
+        return Ok(ConversationRefInput::Filename(stem.to_owned()));
+    }
+    Err(AgentError::invalid_ref(reference, "use a full UUID, UUID-based session basename/filename (not a path), or ref=ch_... from agent output").into())
 }
 
 fn session_uuid(session_filename: &str) -> Option<&str> {
@@ -724,14 +751,66 @@ mod tests {
     }
 
     #[test]
-    fn rejects_uuid_refs_for_command_args() {
-        let keys = vec![key(
-            "project-a",
-            "12345678-1234-4234-9234-123456789abc.jsonl",
-        )];
-        let err =
-            resolve_conversation_ref(&keys, "12345678-1234-4234-9234-123456789abc").unwrap_err();
-        assert!(err.to_string().contains("use ref=ch_..."));
+    fn resolves_uuid_and_reports_missing_and_duplicate_identities() {
+        let uuid = "12345678-1234-4234-9234-123456789abc";
+        let first = key("project-a", &format!("{uuid}.jsonl"));
+        let keys = vec![first.clone()];
+        assert_eq!(
+            resolve_conversation_ref(&keys, &uuid.to_uppercase())
+                .unwrap()
+                .key,
+            first
+        );
+        assert_eq!(
+            agent_error_kind(resolve_conversation_ref(&[], uuid).unwrap_err()),
+            AgentErrorKind::NotFound
+        );
+        let keys = vec![first, key("project-b", &format!("{uuid}.jsonl"))];
+        let error = resolve_conversation_ref(&keys, uuid).unwrap_err();
+        let detail = error.to_string();
+        assert!(detail.contains("retry with"));
+        for key in &keys {
+            assert!(detail.contains(&key.project_id()));
+            assert!(detail.contains(&key.project_dir_name));
+            let handle = key.conversation_ref().canonical();
+            assert!(detail.contains(&handle));
+            assert_eq!(resolve_conversation_ref(&keys, &handle).unwrap().key, *key);
+        }
+        assert_eq!(agent_error_kind(error), AgentErrorKind::AmbiguousRef);
+    }
+
+    #[test]
+    fn resolves_pi_filenames_exactly_and_preserves_ranges_and_focus() {
+        let uuid = "01a082ad-c8d8-7149-8d3e-dd8f74bb7ed4";
+        let stem = format!("2026-09-08T20-20-22-361Z_{uuid}");
+        let mut pi = key("project-a", &format!("{stem}.jsonl"));
+        pi.source = Source::Pi;
+        pi.session_id = uuid.to_owned();
+        let keys = vec![pi.clone()];
+        for input in [uuid.to_owned(), stem.clone(), format!("{stem}.jsonl")] {
+            assert_eq!(resolve_conversation_ref(&keys, &input).unwrap().key, pi);
+            let read = parse_read_ref(&format!("{input}:m2..m4")).unwrap();
+            assert_eq!(read.range, Some(MessageRange { start: 2, end: 4 }));
+            let resolved = resolve_conversation_ref(&keys, &read.conversation).unwrap();
+            let focus = parse_focus_ref(&format!("{uuid}:m3")).unwrap();
+            validate_resolved_focus_in_ranges(&[(read, resolved.clone())], &focus, Some(&resolved))
+                .unwrap();
+        }
+        assert_eq!(
+            agent_error_kind(
+                resolve_conversation_ref(&keys, &format!("wrong_{uuid}")).unwrap_err()
+            ),
+            AgentErrorKind::NotFound
+        );
+        assert!(parse_read_ref(&format!("/tmp/{stem}.jsonl")).is_err());
+        let duplicate = AgentConversationKey {
+            project_dir_name: "project-b".into(),
+            ..pi.clone()
+        };
+        assert_eq!(
+            agent_error_kind(resolve_conversation_ref(&[pi, duplicate], &stem).unwrap_err()),
+            AgentErrorKind::AmbiguousRef
+        );
     }
 
     #[test]
