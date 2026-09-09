@@ -1063,7 +1063,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
             None => format!("0/{}", app.filtered().len()),
         },
     };
-    let status_text = if app.semantic_search_available() {
+    let status_text = if app.list_search_mode() == ListSearchMode::Semantic {
         app.semantic_status_text()
             .map(|status| {
                 format!(
@@ -2860,6 +2860,7 @@ mod tests {
         assert!(line.contains("1/1"), "{line:?}");
         assert!(!line.contains("semantic"), "{line:?}");
         assert!(!line.contains("sem "), "{line:?}");
+        assert!(!line.contains("lex "), "{line:?}");
         assert_cursor_inside(&mut terminal, width);
     }
 
