@@ -1,5 +1,5 @@
 use crate::error::{AppError, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const REPO: &str = "raine/claude-history";
@@ -146,19 +146,151 @@ fn verify_checksum(file: &Path, expected_line: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_support_files(extract_dir: &Path, current_exe: &Path) -> Result<()> {
-    let exe_dir = current_exe
-        .parent()
-        .ok_or_else(|| AppError::UpdateError("Could not determine binary directory".to_string()))?;
-    let lib_dir = extract_dir.join("lib");
-    if !lib_dir.exists() {
-        return Ok(());
+#[derive(Debug)]
+struct SupportInstallation {
+    transaction_dir: tempfile::TempDir,
+    exe_dir: PathBuf,
+    dest_lib_dir: PathBuf,
+    old_lib_dir: Option<PathBuf>,
+    old_links: Vec<RuntimeLinkBackup>,
+}
+
+#[derive(Debug)]
+struct RuntimeLinkBackup {
+    link: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+impl SupportInstallation {
+    fn commit(self) {
+        if let Some(old_lib_dir) = self.old_lib_dir {
+            let _ = remove_path(&old_lib_dir);
+        }
+        for old_link in self.old_links {
+            if let Some(backup) = old_link.backup {
+                let _ = remove_path(&backup);
+            }
+        }
     }
 
+    fn rollback(self) -> Result<()> {
+        let mut errors = Vec::new();
+
+        for old_link in self.old_links.iter().rev() {
+            if path_exists(&old_link.link)
+                && let Err(error) = remove_path(&old_link.link)
+            {
+                errors.push(format!(
+                    "failed to remove {}: {error}",
+                    old_link.link.display()
+                ));
+                continue;
+            }
+            if let Some(backup) = &old_link.backup
+                && let Err(error) = std::fs::rename(backup, &old_link.link)
+            {
+                errors.push(format!(
+                    "failed to restore {}: {error}",
+                    old_link.link.display()
+                ));
+            }
+        }
+
+        if path_exists(&self.dest_lib_dir)
+            && let Err(error) = remove_path(&self.dest_lib_dir)
+        {
+            errors.push(format!(
+                "failed to remove {}: {error}",
+                self.dest_lib_dir.display()
+            ));
+        }
+        if let Some(old_lib_dir) = &self.old_lib_dir
+            && let Err(error) = std::fs::rename(old_lib_dir, &self.dest_lib_dir)
+        {
+            errors.push(format!(
+                "failed to restore {}: {error}",
+                self.dest_lib_dir.display()
+            ));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::UpdateError(format!(
+                "Support-file rollback failed: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+}
+
+fn install_support_files(extract_dir: &Path, current_exe: &Path) -> Result<SupportInstallation> {
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| AppError::UpdateError("Could not determine binary directory".to_string()))?
+        .to_path_buf();
+    let transaction_dir = tempfile::Builder::new()
+        .prefix(&format!(".{BIN_NAME}.update-"))
+        .tempdir_in(&exe_dir)
+        .map_err(|e| {
+            AppError::UpdateError(format!("Failed to create update staging directory: {e}"))
+        })?;
     let dest_lib_dir = exe_dir.join("lib");
-    std::fs::create_dir_all(&dest_lib_dir)
-        .map_err(|e| AppError::UpdateError(format!("Failed to create library directory: {e}")))?;
-    for entry in std::fs::read_dir(&lib_dir)
+    let mut installation = SupportInstallation {
+        transaction_dir,
+        exe_dir,
+        dest_lib_dir,
+        old_lib_dir: None,
+        old_links: Vec::new(),
+    };
+
+    let lib_dir = extract_dir.join("lib");
+    if !path_exists(&lib_dir) {
+        if cfg!(feature = "release-dynamic-ort") {
+            return Err(AppError::UpdateError(
+                "Release archive does not contain a bundled ONNX Runtime library directory"
+                    .to_string(),
+            ));
+        }
+        return Ok(installation);
+    }
+
+    let staged_lib_dir = installation.transaction_dir.path().join("lib");
+    std::fs::create_dir(&staged_lib_dir).map_err(|e| {
+        AppError::UpdateError(format!("Failed to create library staging directory: {e}"))
+    })?;
+    copy_support_files(&lib_dir, &staged_lib_dir)?;
+    if cfg!(feature = "release-dynamic-ort") {
+        ensure_runtime_library(&staged_lib_dir)?;
+    }
+
+    if path_exists(&installation.dest_lib_dir) {
+        let old_lib_dir = installation.transaction_dir.path().join("old-lib");
+        std::fs::rename(&installation.dest_lib_dir, &old_lib_dir).map_err(|e| {
+            AppError::UpdateError(format!("Failed to stage existing library directory: {e}"))
+        })?;
+        installation.old_lib_dir = Some(old_lib_dir);
+    }
+    if let Err(error) = std::fs::rename(&staged_lib_dir, &installation.dest_lib_dir) {
+        let _ = installation.rollback();
+        return Err(AppError::UpdateError(format!(
+            "Failed to install library directory: {error}"
+        )));
+    }
+
+    if let Err(error) = install_runtime_links(&mut installation) {
+        let rollback_error = installation.rollback().err();
+        return Err(match rollback_error {
+            Some(rollback_error) => AppError::UpdateError(format!("{error}; {rollback_error}")),
+            None => error,
+        });
+    }
+
+    Ok(installation)
+}
+
+fn copy_support_files(source_dir: &Path, dest_dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(source_dir)
         .map_err(|e| AppError::UpdateError(format!("Failed to read library directory: {e}")))?
     {
         let entry = entry
@@ -166,35 +298,150 @@ fn install_support_files(extract_dir: &Path, current_exe: &Path) -> Result<()> {
         let file_type = entry
             .file_type()
             .map_err(|e| AppError::UpdateError(format!("Failed to inspect library entry: {e}")))?;
+        let destination = dest_dir.join(entry.file_name());
         if file_type.is_file() {
-            std::fs::copy(entry.path(), dest_lib_dir.join(entry.file_name()))
-                .map_err(|e| AppError::UpdateError(format!("Failed to install library: {e}")))?;
+            std::fs::copy(entry.path(), &destination)
+                .map_err(|e| AppError::UpdateError(format!("Failed to stage library: {e}")))?;
+        } else if file_type.is_symlink() {
+            copy_support_symlink(&entry.path(), &destination)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_support_symlink(source: &Path, destination: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let target = std::fs::read_link(source)
+            .map_err(|e| AppError::UpdateError(format!("Failed to read library symlink: {e}")))?;
+        if target.is_absolute() {
+            return Err(AppError::UpdateError(format!(
+                "Refusing absolute library symlink target: {}",
+                target.display()
+            )));
+        }
+        symlink(&target, destination)
+            .map_err(|e| AppError::UpdateError(format!("Failed to stage library symlink: {e}")))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (source, destination);
+    }
+    Ok(())
+}
+
+fn runtime_library_name() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "libonnxruntime.dylib",
+        "windows" => "onnxruntime.dll",
+        _ => "libonnxruntime.so",
+    }
+}
+
+fn ensure_runtime_library(lib_dir: &Path) -> Result<()> {
+    let name = runtime_library_name();
+    let path = lib_dir.join(name);
+    if path.is_file() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let mut candidates = std::fs::read_dir(lib_dir)
+            .map_err(|e| AppError::UpdateError(format!("Failed to read staged libraries: {e}")))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|candidate| is_versioned_runtime_name(candidate, name))
+            .collect::<Vec<_>>();
+        candidates.sort();
+        if let Some(candidate) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+            let target = candidate.file_name().ok_or_else(|| {
+                AppError::UpdateError("Failed to determine staged library name".to_string())
+            })?;
+            symlink(target, &path).map_err(|e| {
+                AppError::UpdateError(format!("Failed to create bundled library symlink: {e}"))
+            })?;
+            if path.is_file() {
+                return Ok(());
+            }
         }
     }
 
-    create_runtime_symlink(exe_dir, "libonnxruntime.so")?;
-    create_runtime_symlink(exe_dir, "libonnxruntime.dylib")?;
-    Ok(())
+    Err(AppError::UpdateError(format!(
+        "Release archive does not contain a usable {name}"
+    )))
 }
 
-#[cfg(unix)]
-fn create_runtime_symlink(exe_dir: &Path, name: &str) -> Result<()> {
-    use std::os::unix::fs::symlink;
+fn is_versioned_runtime_name(path: &Path, unversioned_name: &str) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    match unversioned_name {
+        "libonnxruntime.dylib" => {
+            file_name.starts_with("libonnxruntime.")
+                && file_name.ends_with(".dylib")
+                && file_name != unversioned_name
+        }
+        "onnxruntime.dll" => false,
+        _ => file_name.starts_with("libonnxruntime.so.") && file_name != unversioned_name,
+    }
+}
 
-    let target = Path::new("lib").join(name);
-    let link = exe_dir.join(name);
-    let _ = std::fs::remove_file(&link);
-    if exe_dir.join(&target).exists() {
-        symlink(&target, &link).map_err(|e| {
-            AppError::UpdateError(format!("Failed to install library symlink: {e}"))
-        })?;
+fn install_runtime_links(installation: &mut SupportInstallation) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        for name in ["libonnxruntime.so", "libonnxruntime.dylib"] {
+            let link = installation.exe_dir.join(name);
+            let backup = installation
+                .transaction_dir
+                .path()
+                .join(format!("old-{name}"));
+            let backup = if path_exists(&link) {
+                std::fs::rename(&link, &backup).map_err(|e| {
+                    AppError::UpdateError(format!("Failed to stage library symlink: {e}"))
+                })?;
+                Some(backup)
+            } else {
+                None
+            };
+            installation.old_links.push(RuntimeLinkBackup {
+                link: link.clone(),
+                backup,
+            });
+
+            if installation.dest_lib_dir.join(name).is_file() {
+                let staged_link = installation
+                    .transaction_dir
+                    .path()
+                    .join(format!("new-{name}"));
+                symlink(Path::new("lib").join(name), &staged_link).map_err(|e| {
+                    AppError::UpdateError(format!("Failed to create library symlink: {e}"))
+                })?;
+                std::fs::rename(staged_link, link).map_err(|e| {
+                    AppError::UpdateError(format!("Failed to install library symlink: {e}"))
+                })?;
+            }
+        }
     }
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn create_runtime_symlink(_exe_dir: &Path, _name: &str) -> Result<()> {
-    Ok(())
+fn path_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 /// Replace the current binary with the new one, with rollback on failure.
@@ -205,6 +452,11 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<()> {
 
     // Copy to destination directory to avoid EXDEV (cross-device rename)
     let staged = exe_dir.join(format!(".{BIN_NAME}.new"));
+    if path_exists(&staged) {
+        remove_path(&staged).map_err(|e| {
+            AppError::UpdateError(format!("Failed to clear stale staged binary: {e}"))
+        })?;
+    }
     std::fs::copy(new_binary, &staged)
         .map_err(|e| AppError::UpdateError(format!("Failed to copy new binary: {e}")))?;
 
@@ -217,6 +469,11 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<()> {
 
     // Rename current -> .old, then staged -> current
     let backup = exe_dir.join(format!(".{BIN_NAME}.old"));
+    if path_exists(&backup) {
+        remove_path(&backup).map_err(|e| {
+            AppError::UpdateError(format!("Failed to clear stale binary backup: {e}"))
+        })?;
+    }
     std::fs::rename(current_exe, &backup)
         .map_err(|e| AppError::UpdateError(format!("Failed to move current binary aside: {e}")))?;
 
@@ -229,7 +486,7 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<()> {
     }
 
     // Cleanup
-    let _ = std::fs::remove_file(&backup);
+    let _ = remove_path(&backup);
     Ok(())
 }
 
@@ -274,8 +531,15 @@ fn do_update(
         )));
     }
 
-    replace_binary(&new_binary, current_exe)?;
-    install_support_files(&extract_dir, current_exe)?;
+    let support_installation = install_support_files(&extract_dir, current_exe)?;
+    if let Err(error) = replace_binary(&new_binary, current_exe) {
+        let rollback_error = support_installation.rollback().err();
+        return Err(match rollback_error {
+            Some(rollback_error) => AppError::UpdateError(format!("{error}; {rollback_error}")),
+            None => error,
+        });
+    }
+    support_installation.commit();
 
     Ok(format!(
         "Updated {BIN_NAME} v{CURRENT_VERSION} -> v{latest_version}"
@@ -356,5 +620,164 @@ mod tests {
         assert!(!is_homebrew_install(Path::new(
             "/home/user/.local/bin/claude-history"
         )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_replacement_does_not_follow_stale_staged_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join(BIN_NAME);
+        let new_binary = temp.path().join("new-binary");
+        let sentinel = temp.path().join("sentinel");
+        let staged = temp.path().join(format!(".{BIN_NAME}.new"));
+        std::fs::write(&current_exe, b"old binary").unwrap();
+        std::fs::write(&new_binary, b"new binary").unwrap();
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+        symlink(&sentinel, &staged).unwrap();
+
+        replace_binary(&new_binary, &current_exe).unwrap();
+
+        assert_eq!(std::fs::read(&current_exe).unwrap(), b"new binary");
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn support_installation_preserves_symlinks_and_removes_stale_runtime() {
+        use std::fs::symlink_metadata;
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join(BIN_NAME);
+        std::fs::write(&current_exe, b"old binary").unwrap();
+
+        let old_lib = temp.path().join("lib");
+        std::fs::create_dir(&old_lib).unwrap();
+        let runtime_name = runtime_library_name();
+        let old_versioned_name = if runtime_name == "libonnxruntime.dylib" {
+            "libonnxruntime.1.23.0.dylib"
+        } else {
+            "libonnxruntime.so.1.23.0"
+        };
+        std::fs::write(old_lib.join(old_versioned_name), b"old runtime").unwrap();
+        symlink(old_versioned_name, old_lib.join(runtime_name)).unwrap();
+        symlink(
+            Path::new("lib").join(runtime_name),
+            temp.path().join(runtime_name),
+        )
+        .unwrap();
+
+        let extract_dir = temp.path().join("extract");
+        let new_lib = extract_dir.join("lib");
+        std::fs::create_dir_all(&new_lib).unwrap();
+        let new_versioned_name = if runtime_name == "libonnxruntime.dylib" {
+            "libonnxruntime.1.24.2.dylib"
+        } else {
+            "libonnxruntime.so.1.24.2"
+        };
+        std::fs::write(new_lib.join(new_versioned_name), b"new runtime").unwrap();
+        symlink(new_versioned_name, new_lib.join(runtime_name)).unwrap();
+
+        let installation = install_support_files(&extract_dir, &current_exe).unwrap();
+        assert!(!old_lib.join(old_versioned_name).exists());
+        assert_eq!(
+            std::fs::read_link(temp.path().join(runtime_name)).unwrap(),
+            Path::new("lib").join(runtime_name)
+        );
+        assert!(
+            symlink_metadata(temp.path().join(runtime_name))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(old_lib.join(runtime_name)).unwrap(),
+            Path::new(new_versioned_name)
+        );
+        installation.commit();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn support_installation_rolls_back_library_and_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join(BIN_NAME);
+        std::fs::write(&current_exe, b"old binary").unwrap();
+
+        let old_lib = temp.path().join("lib");
+        std::fs::create_dir(&old_lib).unwrap();
+        let runtime_name = runtime_library_name();
+        let old_versioned_name = if runtime_name == "libonnxruntime.dylib" {
+            "libonnxruntime.1.23.0.dylib"
+        } else {
+            "libonnxruntime.so.1.23.0"
+        };
+        std::fs::write(old_lib.join(old_versioned_name), b"old runtime").unwrap();
+        symlink(old_versioned_name, old_lib.join(runtime_name)).unwrap();
+        symlink(
+            Path::new("lib").join(runtime_name),
+            temp.path().join(runtime_name),
+        )
+        .unwrap();
+
+        let extract_dir = temp.path().join("extract");
+        let new_lib = extract_dir.join("lib");
+        std::fs::create_dir_all(&new_lib).unwrap();
+        let new_versioned_name = if runtime_name == "libonnxruntime.dylib" {
+            "libonnxruntime.1.24.2.dylib"
+        } else {
+            "libonnxruntime.so.1.24.2"
+        };
+        std::fs::write(new_lib.join(new_versioned_name), b"new runtime").unwrap();
+        symlink(new_versioned_name, new_lib.join(runtime_name)).unwrap();
+
+        let installation = install_support_files(&extract_dir, &current_exe).unwrap();
+        installation.rollback().unwrap();
+
+        assert_eq!(std::fs::read(current_exe).unwrap(), b"old binary");
+        assert_eq!(
+            std::fs::read(old_lib.join(old_versioned_name)).unwrap(),
+            b"old runtime"
+        );
+        assert_eq!(
+            std::fs::read_link(old_lib.join(runtime_name)).unwrap(),
+            Path::new(old_versioned_name)
+        );
+        assert_eq!(
+            std::fs::read_link(temp.path().join(runtime_name)).unwrap(),
+            Path::new("lib").join(runtime_name)
+        );
+    }
+
+    #[cfg(feature = "release-dynamic-ort")]
+    #[test]
+    fn release_support_installation_requires_a_usable_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join(BIN_NAME);
+        std::fs::write(&current_exe, b"old binary").unwrap();
+        let extract_dir = temp.path().join("extract");
+        std::fs::create_dir_all(extract_dir.join("lib")).unwrap();
+
+        let error = install_support_files(&extract_dir, &current_exe).unwrap_err();
+        assert!(error.to_string().contains("usable"));
+        assert_eq!(std::fs::read(current_exe).unwrap(), b"old binary");
+    }
+
+    #[cfg(not(feature = "release-dynamic-ort"))]
+    #[test]
+    fn non_release_update_allows_archives_without_support_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let current_exe = temp.path().join(BIN_NAME);
+        std::fs::write(&current_exe, b"old binary").unwrap();
+        let extract_dir = temp.path().join("extract");
+        std::fs::create_dir(&extract_dir).unwrap();
+
+        let installation = install_support_files(&extract_dir, &current_exe).unwrap();
+        installation.commit();
+        assert_eq!(std::fs::read(current_exe).unwrap(), b"old binary");
     }
 }

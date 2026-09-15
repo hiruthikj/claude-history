@@ -9,6 +9,8 @@ permissions:
 
 env:
   BIN_NAME: claude-history
+  ORT_VERSION: 1.24.2
+  ORT_SOURCE_COMMIT: 058787ceead760166e3c50a0a4cba8a833a6f53f
 
 jobs:
   nix:
@@ -30,12 +32,22 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
             platform: darwin-arm64
+            ort_source: false
+            use_cross: false
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-amd64
+            ort_source: true
             use_cross: false
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             platform: linux-amd64
+            ort_source: false
             use_cross: false
     runs-on: ${{ matrix.os }}
+    env:
+      ORT_SOURCE: ${{ matrix.ort_source }}
+      PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -48,19 +60,82 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Download ONNX Runtime
-        env:
-          ORT_VERSION: 1.24.2
+        if: ${{ !matrix.ort_source }}
         run: |
-          case "${{ matrix.platform }}" in
-            darwin-arm64) ort_platform="osx-arm64" ;;
-            linux-amd64) ort_platform="linux-x64" ;;
-            *) echo "Unsupported platform: ${{ matrix.platform }}" >&2; exit 1 ;;
+          set -euo pipefail
+          case "$PLATFORM" in
+            darwin-arm64)
+              ort_platform="osx-arm64"
+              ort_sha256="0af4fa503e8ea285245b47ee42d0a7461b8156a81270857da0c1d4ecf858abde"
+              ;;
+            linux-amd64)
+              ort_platform="linux-x64"
+              ort_sha256="43725474ba5663642e17684717946693850e2005efbd724ac72da278fead25e6"
+              ;;
+            *)
+              echo "Unsupported official ONNX Runtime platform: $PLATFORM" >&2
+              exit 1
+              ;;
           esac
-          curl -L -o onnxruntime.tgz "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-${ort_platform}-${ORT_VERSION}.tgz"
-          mkdir onnxruntime
+          ort_url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-${ort_platform}-${ORT_VERSION}.tgz"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 600 \
+            --output onnxruntime.tgz "$ort_url"
+          printf '%s  %s\n' "$ort_sha256" onnxruntime.tgz | shasum -a 256 --check -
+          mkdir -p onnxruntime
           tar -xzf onnxruntime.tgz -C onnxruntime --strip-components=1
+      - name: Cache source-built ONNX Runtime
+        if: ${{ matrix.ort_source }}
+        uses: actions/cache@v4
+        with:
+          path: onnxruntime-cache
+          # The exact source, target, and build identity are part of the key.
+          key: ort-${{ matrix.os }}-${{ matrix.target }}-${{ env.ORT_VERSION }}-${{ env.ORT_SOURCE_COMMIT }}-release-shared-cpu
+      - name: Build source-pinned ONNX Runtime
+        if: ${{ matrix.ort_source }}
+        run: |
+          set -euo pipefail
+          ort_cache="$GITHUB_WORKSPACE/onnxruntime-cache"
+          ort_library="$ort_cache/lib/libonnxruntime.${ORT_VERSION}.dylib"
+          cache_valid=false
+          if [[ -f "$ort_library" && -L "$ort_cache/lib/libonnxruntime.dylib" ]]; then
+            if file "$ort_library" | grep -Eq 'Mach-O.*x86_64'; then
+              cache_valid=true
+            fi
+          fi
+
+          if [[ "$cache_valid" != true ]]; then
+            rm -rf "$GITHUB_WORKSPACE/onnxruntime-build" "$ort_cache" onnxruntime-source
+            git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
+              https://github.com/microsoft/onnxruntime.git onnxruntime-source
+            source_commit="$(git -C onnxruntime-source rev-parse HEAD)"
+            test "$source_commit" = "$ORT_SOURCE_COMMIT"
+
+            python3 onnxruntime-source/tools/ci_build/build.py \
+              --build_dir "$GITHUB_WORKSPACE/onnxruntime-build" \
+              --config Release \
+              --update --build \
+              --build_shared_lib \
+              --skip_tests \
+              --skip_submodule_sync \
+              --parallel 3 \
+              --osx_arch x86_64 \
+              --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
+                FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER
+
+            built_library="$GITHUB_WORKSPACE/onnxruntime-build/Release/libonnxruntime.${ORT_VERSION}.dylib"
+            test -f "$built_library"
+            mkdir -p "$ort_cache/lib"
+            cp -p "$built_library" "$ort_library"
+            ln -s "libonnxruntime.${ORT_VERSION}.dylib" "$ort_cache/lib/libonnxruntime.dylib"
+          fi
+
+          test -f "$ort_library"
+          test -L "$ort_cache/lib/libonnxruntime.dylib"
+          file "$ort_library" | grep -Eq 'Mach-O.*x86_64'
       - name: Build
         run: |
+          set -euo pipefail
           build_args=(--release --locked --target ${{ matrix.target }} --features release-dynamic-ort)
           if [ "${{ matrix.use_cross }}" == "true" ]; then
             cross build "${build_args[@]}"
@@ -69,23 +144,72 @@ jobs:
           fi
       - name: Package
         run: |
+          set -euo pipefail
           bin="target/${{ matrix.target }}/release/${BIN_NAME}"
           package="package"
+          test -x "$bin"
+          rm -rf "$package"
           mkdir -p "$package/lib"
           cp "$bin" "$package/"
-          find onnxruntime/lib -maxdepth 1 \( -type f -o -type l \) -name 'libonnxruntime*' -exec cp -P {} "$package/lib/" \;
-          # Only strip on Linux to avoid corrupting macOS code signatures
+
+          if [[ "$ORT_SOURCE" == "true" ]]; then
+            runtime_dir="$GITHUB_WORKSPACE/onnxruntime-cache/lib"
+          else
+            runtime_dir="$GITHUB_WORKSPACE/onnxruntime/lib"
+          fi
+          find "$runtime_dir" -maxdepth 1 \( -type f -o -type l \) \
+            -name 'libonnxruntime*' -exec cp -P {} "$package/lib/" \;
+
+          if [[ "$PLATFORM" == darwin-* ]]; then
+            runtime_files=("libonnxruntime.dylib" "libonnxruntime.${ORT_VERSION}.dylib")
+          else
+            runtime_files=("libonnxruntime.so" "libonnxruntime.so.${ORT_VERSION}")
+          fi
+          for runtime_file in "${runtime_files[@]}"; do
+            test -f "$package/lib/$runtime_file"
+          done
+
+          # Only strip on Linux to avoid corrupting macOS code signatures.
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            strip "$package/${BIN_NAME}" || true
+            strip "$package/${BIN_NAME}"
           fi
           archive="${BIN_NAME}-${{ matrix.platform }}.tar.gz"
           tar -C "$package" -czf "$archive" .
           shasum -a 256 "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
-      - name: Smoke test packaged binary
+      - name: Smoke test packaged semantic inference
         run: |
-          "$GITHUB_WORKSPACE/package/${BIN_NAME}" --version
-          test -f "$GITHUB_WORKSPACE/package/lib/libonnxruntime.dylib" || test -f "$GITHUB_WORKSPACE/package/lib/libonnxruntime.so"
-          test -f "$GITHUB_WORKSPACE/package/lib/libonnxruntime.1.24.2.dylib" || test -f "$GITHUB_WORKSPACE/package/lib/libonnxruntime.so.1.24.2"
+          set -euo pipefail
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf "$smoke_root"' EXIT
+          workspace="$smoke_root/workspace"
+          config="$smoke_root/config"
+          cache_home="$smoke_root/home"
+          mkdir -p "$workspace" "$cache_home" "$config"
+          workspace="$(cd "$workspace" && pwd -P)"
+          project_dir="$(printf '%s' "$workspace" | sed 's/[^A-Za-z0-9-]/-/g')"
+          mkdir -p "$config/projects/$project_dir"
+          cat > "$config/projects/$project_dir/12345678-1234-1234-1234-123456789abc.jsonl" << EOF
+          {"type":"user","timestamp":"2024-01-01T00:00:00Z","cwd":"$workspace","message":{"role":"user","content":"How should release compatibility be verified?"}}
+          {"type":"assistant","timestamp":"2024-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Release compatibility should be verified with packaged semantic inference."}]}}
+          EOF
+
+          if [[ "$PLATFORM" == darwin-* ]]; then
+            runtime="$GITHUB_WORKSPACE/package/lib/libonnxruntime.dylib"
+          else
+            runtime="$GITHUB_WORKSPACE/package/lib/libonnxruntime.so"
+          fi
+          test -f "$runtime"
+          output="$(
+            cd "$workspace"
+            HOME="$cache_home" \
+              CLAUDE_CONFIG_DIR="$config" \
+              ORT_DYLIB_PATH="$runtime" \
+              "$GITHUB_WORKSPACE/package/${BIN_NAME}" \
+              --semantic-search "release compatibility" --semantic-top 1 --local 2>&1
+          )"
+          printf '%s\n' "$output"
+          grep -F 'Semantic search: searching' <<<"$output"
+          grep -F 'Release compatibility should be verified' <<<"$output"
       - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.platform }}
@@ -102,6 +226,17 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
+      - name: Verify all release artifacts
+        run: |
+          set -euo pipefail
+          platforms=(darwin-arm64 darwin-amd64 linux-amd64)
+          for platform in "${platforms[@]}"; do
+            archive="${BIN_NAME}-${platform}.tar.gz"
+            checksum="${BIN_NAME}-${platform}.sha256"
+            test -s "$archive"
+            test -s "$checksum"
+            shasum -a 256 --check "$checksum"
+          done
       - uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -126,8 +261,10 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           VERSION="${VERSION#v}"
-          SHA_ARM=$(awk '{print $1}' claude-history-darwin-arm64.sha256)
+          SHA_MAC_ARM=$(awk '{print $1}' claude-history-darwin-arm64.sha256)
+          SHA_MAC_AMD=$(awk '{print $1}' claude-history-darwin-amd64.sha256)
           SHA_LINUX=$(awk '{print $1}' claude-history-linux-amd64.sha256)
 
           cat > tap/Formula/claude-history.rb << EOF
@@ -138,10 +275,13 @@ jobs:
             license "MIT"
 
             on_macos do
-              depends_on arch: :arm64
-
-              url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-arm64.tar.gz"
-              sha256 "${SHA_ARM}"
+              if Hardware::CPU.arm?
+                url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-arm64.tar.gz"
+                sha256 "${SHA_MAC_ARM}"
+              else
+                url "https://github.com/raine/claude-history/releases/download/v${VERSION}/claude-history-darwin-amd64.tar.gz"
+                sha256 "${SHA_MAC_AMD}"
+              end
             end
 
             on_linux do

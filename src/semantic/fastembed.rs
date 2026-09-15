@@ -5,7 +5,7 @@ use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use std::path::PathBuf;
 
 #[cfg(feature = "release-dynamic-ort")]
-use std::{path::Path, sync::Once};
+use std::{path::Path, sync::OnceLock};
 
 pub struct FastembedEmbedder {
     model: TextEmbedding,
@@ -28,7 +28,7 @@ impl FastembedEmbedder {
         cache_dir: PathBuf,
         show_download_progress: bool,
     ) -> Result<Self> {
-        init_onnx_runtime();
+        init_onnx_runtime()?;
         let model = TextEmbedding::try_new(
             TextInitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir)
@@ -71,38 +71,98 @@ pub fn prefixed_passages(passages: &[String]) -> Vec<String> {
 }
 
 #[cfg(feature = "release-dynamic-ort")]
-fn init_onnx_runtime() {
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        if let Some(path) = bundled_onnx_runtime_path() {
-            let _ = ort::init_from(path).map(|builder| builder.commit());
-        }
-    });
+fn init_onnx_runtime() -> Result<()> {
+    static INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    match INIT.get_or_init(initialize_bundled_onnx_runtime) {
+        Ok(()) => Ok(()),
+        Err(message) => Err(AppError::ConfigError(message.clone())),
+    }
 }
 
 #[cfg(not(feature = "release-dynamic-ort"))]
-fn init_onnx_runtime() {}
+fn init_onnx_runtime() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn initialize_bundled_onnx_runtime() -> std::result::Result<(), String> {
+    let path = bundled_onnx_runtime_path().ok_or_else(|| {
+        format!(
+            "Bundled ONNX Runtime library was not found beside the executable; expected a compatible {}",
+            runtime_library_name()
+        )
+    })?;
+    let builder = ort::init_from(&path).map_err(|error| {
+        format!(
+            "Failed to load bundled ONNX Runtime from {}: {error}",
+            path.display()
+        )
+    })?;
+    if !builder.commit() {
+        return Err(format!(
+            "Failed to initialize bundled ONNX Runtime from {}: an ONNX Runtime environment is already configured",
+            path.display()
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(feature = "release-dynamic-ort")]
 fn bundled_onnx_runtime_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    for candidate in onnx_runtime_candidates(dir) {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
+    bundled_onnx_runtime_path_in_dir(exe.parent()?)
 }
 
 #[cfg(feature = "release-dynamic-ort")]
-fn onnx_runtime_candidates(dir: &Path) -> [PathBuf; 4] {
-    [
-        dir.join("libonnxruntime.so"),
-        dir.join("lib").join("libonnxruntime.so"),
-        dir.join("libonnxruntime.dylib"),
-        dir.join("lib").join("libonnxruntime.dylib"),
-    ]
+fn bundled_onnx_runtime_path_in_dir(dir: &Path) -> Option<PathBuf> {
+    onnx_runtime_candidates(dir)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn onnx_runtime_candidates(dir: &Path) -> Vec<PathBuf> {
+    let name = runtime_library_name();
+    let lib_dir = dir.join("lib");
+    let mut candidates = vec![dir.join(name), lib_dir.join(name)];
+
+    for library_dir in [dir, lib_dir.as_path()] {
+        let Ok(entries) = std::fs::read_dir(library_dir) else {
+            continue;
+        };
+        let mut versioned = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| is_versioned_runtime_name(path, name))
+            .collect::<Vec<_>>();
+        versioned.sort();
+        candidates.extend(versioned);
+    }
+    candidates
+}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn runtime_library_name() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "libonnxruntime.dylib",
+        "windows" => "onnxruntime.dll",
+        _ => "libonnxruntime.so",
+    }
+}
+
+#[cfg(feature = "release-dynamic-ort")]
+fn is_versioned_runtime_name(path: &Path, unversioned_name: &str) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    match unversioned_name {
+        "libonnxruntime.dylib" => {
+            file_name.starts_with("libonnxruntime.")
+                && file_name.ends_with(".dylib")
+                && file_name != unversioned_name
+        }
+        "onnxruntime.dll" => false,
+        _ => file_name.starts_with("libonnxruntime.so.") && file_name != unversioned_name,
+    }
 }
 
 fn to_config_error(err: impl std::fmt::Display) -> AppError {
@@ -126,6 +186,47 @@ mod tests {
         assert_eq!(
             prefixed_passages(&["one".to_string(), "two".to_string()]),
             vec!["one".to_string(), "two".to_string()]
+        );
+    }
+
+    #[cfg(not(feature = "release-dynamic-ort"))]
+    #[test]
+    fn non_release_runtime_initialization_is_a_noop() {
+        assert!(init_onnx_runtime().is_ok());
+    }
+
+    #[cfg(feature = "release-dynamic-ort")]
+    #[test]
+    fn runtime_path_uses_the_host_library_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let lib_dir = temp.path().join("lib");
+        std::fs::create_dir(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("libonnxruntime.dylib"), b"wrong host").unwrap();
+        std::fs::write(lib_dir.join(runtime_library_name()), b"runtime").unwrap();
+
+        assert_eq!(
+            bundled_onnx_runtime_path_in_dir(temp.path()),
+            Some(lib_dir.join(runtime_library_name()))
+        );
+    }
+
+    #[cfg(feature = "release-dynamic-ort")]
+    #[test]
+    fn runtime_path_falls_back_to_a_versioned_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let lib_dir = temp.path().join("lib");
+        std::fs::create_dir(&lib_dir).unwrap();
+        let versioned_name = if runtime_library_name() == "libonnxruntime.dylib" {
+            "libonnxruntime.1.24.2.dylib"
+        } else {
+            "libonnxruntime.so.1.24.2"
+        };
+        let versioned = lib_dir.join(versioned_name);
+        std::fs::write(&versioned, b"runtime").unwrap();
+
+        assert_eq!(
+            bundled_onnx_runtime_path_in_dir(temp.path()),
+            Some(versioned)
         );
     }
 }
