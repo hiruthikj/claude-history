@@ -117,6 +117,7 @@ jobs:
               --config Release \
               --update --build \
               --build_shared_lib \
+              --compile_no_warning_as_error \
               --skip_tests \
               --skip_submodule_sync \
               --parallel 3 \
