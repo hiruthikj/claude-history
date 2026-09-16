@@ -60,16 +60,6 @@ Release archives include Apple Silicon macOS (`darwin-arm64`), Intel macOS
 (`darwin-amd64`), and x86_64 Linux (`linux-amd64`) builds. The macOS releases
 bundle ONNX Runtime, so semantic search needs no separate runtime install.
 
-### Intel Mac temporary workaround
-
-Until a release containing the Intel macOS build is available, install the last
-Intel-compatible release before semantic search was added:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/raine/claude-history/main/scripts/install.sh \
-  | CLAUDE_HISTORY_VERSION=v0.1.57 bash
-```
-
 ### Homebrew (macOS/Linux)
 
 ```sh

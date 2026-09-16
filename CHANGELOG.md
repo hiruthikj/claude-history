@@ -1,3 +1,20 @@
+## v0.1.75 (2026-09-16)
+
+- Intel macOS releases and Homebrew installs now include semantic search, and
+  self-updates replace bundled runtime files safely with rollback on failure
+  ([#84](https://github.com/raine/claude-history/issues/84))
+- Fix: Nix installations start correctly on macOS and are now verified on both
+  macOS and Linux
+  ([#76](https://github.com/raine/claude-history/pull/76))
+- Semantic search avoids repeated indexing work, stays responsive while typing,
+  and preserves visible results and embedding progress during query changes
+- Agent read, outline, and within commands accept full session UUIDs and
+  UUID-based session filenames, including timestamped Pi filenames
+- Agent semantic and hybrid search results expose semantic and lexical score
+  components so callers can assess match strength
+  ([#80](https://github.com/raine/claude-history/issues/80))
+- The default lexical search count no longer shows the unexplained `lex` prefix
+
 ## v0.1.74 (2026-08-24)
 
 - Fix: `--show-id` in command substitution returns just the session ID, with no
