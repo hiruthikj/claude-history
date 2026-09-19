@@ -72,7 +72,7 @@ mod tests {
                 source: crate::semantic::types::SemanticChunkSource::VisibleDialogue,
                 session: session.to_string(),
                 chunk_index: 0,
-                message_range: crate::agent::refs::MessageRange::single(1),
+                message_range: crate::history::MessageRange::single(1),
             },
         };
         SemanticHit::new(score_breakdown, explanation)

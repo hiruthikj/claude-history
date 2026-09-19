@@ -94,13 +94,17 @@ after the terminal guard is dropped.
   same parser. Control records (summaries, titles, Pi/OMP session metadata,
   `/clear` wrappers, warmups) are kept out of previews, `message_count`, and
   semantic turns but may remain in `full_text`.
-- Message ordinals (`mN` in the agent protocol) are assigned in two places
-  that must agree: `history/parser.rs` (`message_count`, stored in the cache
-  as `MessageRange`s) and `agent/transcript.rs` (its own filter loop). Both
-  count subagent `progress` records and dedupe streamed assistant messages by
-  id. Changing what counts as a message in one without the other desyncs
-  semantic evidence from reads; either change shifts every agent reference
-  and requires a history cache bump.
+- Message ordinals (`mN` in the agent protocol) are assigned by one module:
+  `history/messages.rs::MessageOrdinals`. Both walkers — `history/parser.rs`
+  (`message_count`, cached `MessageRange`s) and `agent/transcript.rs` — feed
+  it records in file order and act on the returned `Placement`
+  (`Message`/`Replaces`/`Control`); the rule (warmups, `/clear` wrappers,
+  streamed assistant dedupe by id, subagent `progress` records, searchable
+  Pi/OMP metadata) lives nowhere else, and `messages.rs` has a parity test
+  over both walkers. Changing the rule shifts every agent reference and
+  requires a history cache bump. `MessageRange` lives here too, so `history/`
+  no longer depends on `agent/refs.rs` (it still borrows text-bounding
+  helpers from `agent/transcript.rs`).
 - Discovery roots and env vars: `CLAUDE_CONFIG_DIR` (Claude),
   `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` (Pi),
   `OMP_PROFILE`/`PI_PROFILE`, `PI_CONFIG_DIR`, `XDG_DATA_HOME` (OMP). Root
@@ -143,8 +147,14 @@ after the terminal guard is dropped.
   so the `dialogue_text_lower` field (visible user/assistant prose, tag spans
   stripped in `history/parser.rs`) is what separates "about X" from "mentions
   X". Word-boundary rules live in `text_match.rs` and are shared with
-  `search/evidence.rs` highlighting and the agent retrieval paths: a query
-  word starting with punctuation does not require a word start.
+  `search/matcher.rs` and the agent retrieval paths: a query word starting
+  with punctuation does not require a word start.
+- `search/matcher.rs::QueryMatcher` is the one place that locates a
+  `ParsedQuery` in text: highlight ranges, "is this literal visible in the
+  preview", and the hidden-context evidence (`LexicalEvidence`) the lexical
+  worker precomputes per hit. `ParsedQuery::words`/`identifier_literals` own
+  the `_`-promotion rule. `tui/snippet.rs` only fits text around ranges the
+  matcher returns; it never re-derives matches.
 - Mode precedence (`search/mode.rs`, `agent/service.rs`): CLI > `[agent].mode`
   > `[search].mode` > deprecated `[tui].semantic_search`. A quoted-only query
   forces Exact. The TUI collapses Hybrid/Exact to Lexical.

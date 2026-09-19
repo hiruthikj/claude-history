@@ -1,9 +1,9 @@
-use crate::agent::refs::MessageRange;
 use crate::agent::sanitize::sanitize_agent_text;
 use crate::agent::transcript::{
     AgentMessage, AgentMessagePart, AgentTranscript, agent_part_search_text, truncate_chars,
 };
 use crate::agent::visibility::ContentVisibility;
+use crate::history::MessageRange;
 use crate::search::literal::Literal;
 use crate::search::query::ParsedQuery;
 use crate::text_match::{contains_cjk, contains_prefix_match, normalize_for_search};
@@ -172,30 +172,8 @@ fn lexical_candidates(
     parsed: &ParsedQuery,
     options: AgentRetrievalOptions,
 ) -> Vec<Candidate> {
-    let unquoted_terms = unquoted_terms(parsed.unquoted());
-    let normalized_query = normalize_for_search(
-        &unquoted_terms
-            .iter()
-            .copied()
-            .filter(|term| !term.contains('_'))
-            .collect::<Vec<_>>()
-            .join(" "),
-    );
-    let query_words = normalized_query
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    let identifier_literals = unquoted_terms
-        .iter()
-        .copied()
-        .filter(|term| term.contains('_'))
-        .map(|term| Literal::new(term.to_string()));
-    let literal_filters = parsed
-        .literals()
-        .iter()
-        .cloned()
-        .chain(identifier_literals)
-        .collect::<Vec<_>>();
+    let query_words = parsed.words();
+    let literal_filters = parsed.all_literals();
 
     if query_words.is_empty() && literal_filters.is_empty() {
         return Vec::new();
@@ -436,10 +414,6 @@ fn join_segment_text(segments: &[&Segment]) -> String {
         .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn unquoted_terms(unquoted: &str) -> Vec<&str> {
-    unquoted.split_whitespace().collect()
 }
 
 fn message_matches_words(normalized: &str, words: &[String]) -> bool {

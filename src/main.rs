@@ -816,8 +816,8 @@ mod agent_command_tests {
                 evidence_source: agent::retrieval::AgentHitSource::Dialogue,
                 render_options: agent::retrieval::AgentHitRenderOptions::default(),
                 preview: "cache warming answer".to_string(),
-                focus_range: agent::refs::MessageRange::single(2),
-                read_range: agent::refs::MessageRange { start: 1, end: 3 },
+                focus_range: crate::history::MessageRange::single(2),
+                read_range: crate::history::MessageRange { start: 1, end: 3 },
             }],
             groups: vec![],
             flat: true,
@@ -972,7 +972,7 @@ mod agent_command_tests {
             agent_search_text: String::new(),
             semantic_route_text: String::new(),
             semantic_turns: vec!["session".to_string()],
-            semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
+            semantic_turn_ranges: vec![crate::history::MessageRange::single(1)],
             search_text_lower: "session".to_string(),
             dialogue_text_lower: String::new(),
             project_name: Some("project-a".to_string()),
@@ -1005,7 +1005,7 @@ mod agent_command_tests {
 
     fn semantic_hit_for_test(
         source: crate::semantic::types::SemanticChunkSource,
-        message_range: agent::refs::MessageRange,
+        message_range: crate::history::MessageRange,
         evidence_preview: &str,
     ) -> crate::semantic::types::SemanticHit {
         crate::semantic::types::SemanticHit::new(
@@ -1119,7 +1119,7 @@ mod agent_command_tests {
         let semantic_range = *conversation
             .semantic_turn_ranges
             .iter()
-            .find(|range| **range == agent::refs::MessageRange::single(5))
+            .find(|range| **range == crate::history::MessageRange::single(5))
             .expect("assistant text should use canonical m5");
         let semantic_hit = semantic_hit_for_test(
             crate::semantic::types::SemanticChunkSource::VisibleDialogue,
@@ -1176,7 +1176,7 @@ mod agent_command_tests {
         let semantic_range = *conversation
             .semantic_turn_ranges
             .iter()
-            .find(|range| **range == agent::refs::MessageRange::single(2))
+            .find(|range| **range == crate::history::MessageRange::single(2))
             .expect("assistant text should use canonical m2");
         let semantic_hit = semantic_hit_for_test(
             crate::semantic::types::SemanticChunkSource::VisibleDialogue,
@@ -1519,7 +1519,7 @@ mod agent_command_tests {
         );
         assert_eq!(
             candidate.semantic_turn_ranges.last().copied(),
-            Some(agent::refs::MessageRange::single(2))
+            Some(crate::history::MessageRange::single(2))
         );
         assert!(
             !conversation
@@ -1553,7 +1553,7 @@ mod agent_command_tests {
             agent_search_text: String::new(),
             semantic_route_text: String::new(),
             semantic_turns: vec!["visible semantic".to_string()],
-            semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
+            semantic_turn_ranges: vec![crate::history::MessageRange::single(1)],
             search_text_lower: "visible semantic".to_string(),
             dialogue_text_lower: String::new(),
             project_name: Some("project-a".to_string()),
@@ -1671,7 +1671,7 @@ mod agent_command_tests {
         let transcript = load_transcript(&resolved.key.path);
         let semantic_hit = semantic_hit_for_test(
             crate::semantic::types::SemanticChunkSource::AgentSubagentDialogue,
-            agent::refs::MessageRange::single(2),
+            crate::history::MessageRange::single(2),
             "progress_only_semantic_needle",
         );
         let within_request = agent::search::AgentWithinRequest {

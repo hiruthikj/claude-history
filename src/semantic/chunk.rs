@@ -1,5 +1,5 @@
-use crate::agent::refs::MessageRange;
 use crate::history::Conversation;
+use crate::history::MessageRange;
 use crate::semantic::types::{ChunkConfig, SemanticChunk, SemanticChunkSource};
 #[cfg(test)]
 use std::path::PathBuf;

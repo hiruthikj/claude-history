@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::agent::refs::MessageRange;
 use crate::history::Conversation;
+use crate::history::MessageRange;
 use crate::search::normalize_for_search;
 use chrono::Local;
 

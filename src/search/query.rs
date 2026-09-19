@@ -1,4 +1,5 @@
 use crate::search::literal::Literal;
+use crate::text_match::normalize_for_search;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedQuery {
@@ -73,6 +74,42 @@ impl ParsedQuery {
         &self.literals
     }
 
+    /// Unquoted words as the lexical index sees them: normalized and split,
+    /// with identifier-shaped terms (containing `_`) left out because they are
+    /// matched exactly via [`Self::identifier_literals`].
+    pub fn words(&self) -> Vec<String> {
+        let plain = self
+            .unquoted
+            .split_whitespace()
+            .filter(|term| !term.contains('_'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        normalize_for_search(&plain)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Unquoted terms containing `_` are promoted to exact literals so
+    /// `api_key` does not match `api key`.
+    pub fn identifier_literals(&self) -> Vec<Literal> {
+        self.unquoted
+            .split_whitespace()
+            .filter(|term| term.contains('_'))
+            .map(|term| Literal::new(term.to_string()))
+            .collect()
+    }
+
+    /// Quoted literals followed by promoted identifier literals: every exact
+    /// filter a conversation must satisfy.
+    pub fn all_literals(&self) -> Vec<Literal> {
+        self.literals
+            .iter()
+            .cloned()
+            .chain(self.identifier_literals())
+            .collect()
+    }
+
     pub fn is_quoted_only(&self) -> bool {
         !self.literals.is_empty() && self.unquoted.split_whitespace().next().is_none()
     }
@@ -145,6 +182,19 @@ mod tests {
             "e7d318b1-4274-4ee2-a341-e94893b5df49"
         );
         assert_eq!(parsed.semantic_text(), "");
+    }
+
+    #[test]
+    fn splits_words_from_identifier_literals() {
+        let parsed = ParsedQuery::parse("Audio_Generation deploy-Token \"Exact\"");
+        assert_eq!(parsed.words(), vec!["deploy", "token"]);
+        let identifiers = parsed.identifier_literals();
+        assert_eq!(identifiers.len(), 1);
+        assert_eq!(identifiers[0].text(), "Audio_Generation");
+        assert_eq!(identifiers[0].case_mode(), CaseMode::Sensitive);
+        let all = parsed.all_literals();
+        assert_eq!(all[0].text(), "Exact");
+        assert_eq!(all[1].text(), "Audio_Generation");
     }
 
     #[test]

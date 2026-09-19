@@ -5,7 +5,7 @@
 //! search text normalization on startup for unchanged files.
 
 use super::{Conversation, ParseError};
-use crate::agent::refs::MessageRange;
+use crate::history::MessageRange;
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CACHE_MAGIC: [u8; 8] = *b"CLHIST01";
 const PI_CACHE_MAGIC: [u8; 8] = *b"PIHIST01";
 const OMP_CACHE_MAGIC: [u8; 8] = *b"OMHIST01";
-const SCHEMA_VERSION: u32 = 12;
-const PI_SCHEMA_VERSION: u32 = 2;
-const OMP_SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 13;
+const PI_SCHEMA_VERSION: u32 = 3;
+const OMP_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct PiCache {

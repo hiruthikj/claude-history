@@ -1,6 +1,6 @@
 use crate::history::Conversation;
 use crate::search::literal::{
-    Literal, LiteralCorpusEntry, build_agent_literal_corpus, build_literal_corpus, exact_fallback,
+    LiteralCorpusEntry, build_agent_literal_corpus, build_literal_corpus, exact_fallback,
     matches_all_literals,
 };
 use crate::search::query::ParsedQuery;
@@ -230,14 +230,6 @@ fn browse_debug_results(
         .collect()
 }
 
-fn identifier_literals(query: &str) -> Vec<Literal> {
-    query
-        .split_whitespace()
-        .filter(|term| term.contains('_'))
-        .map(|term| Literal::new(term.to_string()))
-        .collect()
-}
-
 fn normalized_query_words(query: &str) -> String {
     normalize_for_search(query)
 }
@@ -359,7 +351,7 @@ fn search_debug_with_query(
 
     let query_lower = normalized_query_words(intent);
     let mut plan = QueryPlan::new(&query_lower, parsed.unquoted());
-    let identifier_literals = identifier_literals(intent);
+    let identifier_literals = parsed.identifier_literals();
     // A lone identifier (`api_key`) is already a hard filter: every survivor
     // contains it, so the verbatim bonus would be a constant.
     if plan.verbatim.as_ref().is_some_and(|needle| {

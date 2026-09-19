@@ -904,7 +904,7 @@ pub(crate) fn agent_route_semantic_conversation(
                 .semantic_turn_ranges
                 .first()
                 .copied()
-                .unwrap_or_else(|| agent::refs::MessageRange::single(1)),
+                .unwrap_or_else(|| crate::history::MessageRange::single(1)),
         ],
     ))
 }
@@ -913,7 +913,7 @@ fn stripped_semantic_conversation(
     conversation: &history::Conversation,
     path: PathBuf,
     semantic_turns: Vec<String>,
-    semantic_turn_ranges: Vec<agent::refs::MessageRange>,
+    semantic_turn_ranges: Vec<crate::history::MessageRange>,
 ) -> history::Conversation {
     history::Conversation {
         source: conversation.source,
@@ -1189,7 +1189,8 @@ fn agent_semantic_conversation<'a>(
             for text in texts {
                 if let Some(turn) = semantic::filter::filter_turn(role, &text) {
                     semantic_turns.push(turn);
-                    semantic_turn_ranges.push(agent::refs::MessageRange::single(message.ordinal));
+                    semantic_turn_ranges
+                        .push(crate::history::MessageRange::single(message.ordinal));
                 }
             }
         }
@@ -1381,7 +1382,7 @@ impl AgentService {
             .collect::<Result<Vec<_>>>()?;
         if let Some(anchor) = args.anchor.as_deref() {
             let ordinal = transcripts[0].resolve_anchor(&resolved_refs[0].1, anchor)?;
-            resolved_refs[0].0.range = Some(agent::refs::MessageRange::single(ordinal));
+            resolved_refs[0].0.range = Some(crate::history::MessageRange::single(ordinal));
         }
         let requests = resolved_refs
             .iter()

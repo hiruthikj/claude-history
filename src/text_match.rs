@@ -71,7 +71,7 @@ pub fn is_word_end(text: &str, end: usize) -> bool {
 /// A query word that starts with punctuation (`.rs`, `@scope`, `#[derive`)
 /// carries its own boundary, so it may match inside a longer token such as
 /// `lexical.rs`. Words that start alphanumerically must start a word. This is
-/// the same rule `search/evidence.rs` uses for highlighting.
+/// the same rule `search/matcher.rs` uses for highlighting.
 pub fn requires_word_start(word: &str) -> bool {
     word.chars().next().is_some_and(char::is_alphanumeric)
 }

@@ -1,6 +1,6 @@
 use crate::agent::diagnostic::AgentError;
 use crate::agent::diagnostic::{AgentWarning, format_warning_records};
-use crate::agent::refs::{MessageRange, ResolvedConversation};
+use crate::agent::refs::ResolvedConversation;
 use crate::agent::sanitize::sanitize_agent_text;
 use crate::agent::transcript::{
     AgentMessage, AgentMessagePart, AgentMessageRole, AgentTranscript, MAX_AGENT_SEGMENT_CHARS,
@@ -8,6 +8,7 @@ use crate::agent::transcript::{
 };
 use crate::agent::visibility::ContentVisibility;
 use crate::error::Result;
+use crate::history::MessageRange;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::str::FromStr;

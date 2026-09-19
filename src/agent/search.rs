@@ -1,5 +1,5 @@
 use crate::agent::diagnostic::{AgentWarning, format_warning_records};
-use crate::agent::refs::{AgentConversationKey, MessageRange, ResolvedConversation};
+use crate::agent::refs::{AgentConversationKey, ResolvedConversation};
 use crate::agent::retrieval::{
     AgentHitRenderOptions, AgentHitSource, AgentRetrievalOptions, AgentSearchHit as RetrievalHit,
     AgentTranscriptSearchTarget, format_evidence_preview, read_range_for_focus,
@@ -9,6 +9,7 @@ use crate::agent::sanitize::sanitize_agent_text;
 use crate::agent::transcript::AgentTranscript;
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
+use crate::history::MessageRange;
 use crate::search::mode::{SearchMode, SearchModeResolution, resolve_search_mode};
 use crate::search::query::ParsedQuery;
 use crate::semantic::types::{SemanticChunkSource, SemanticHit, SemanticScoreBreakdown};
