@@ -13,6 +13,7 @@ use crate::claude::{
 };
 use crate::command_tags::{parse_command_name, parse_command_name_and_args};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// An inclusive 1-based range of message ordinals within one transcript.
@@ -109,7 +110,7 @@ impl MessageOrdinals {
     }
 
     fn place_user(&mut self, message: &UserMessage) -> Placement {
-        let text = extract_text_from_user(message);
+        let text = user_visible_text(message);
         if extract_skill_preview(&text).is_none()
             && !text.is_empty()
             && is_clear_metadata_message(&text)
@@ -148,6 +149,25 @@ impl MessageOrdinals {
     fn next(&mut self) -> Placement {
         self.count += 1;
         Placement::Message(self.count)
+    }
+}
+
+/// The text blocks of a user message, borrowed when there is at most one so
+/// the cold parse does not allocate per record.
+fn user_visible_text(message: &UserMessage) -> Cow<'_, str> {
+    match &message.content {
+        UserContent::String(text) => Cow::Borrowed(text),
+        UserContent::Blocks(blocks) => {
+            let mut texts = blocks.iter().filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            });
+            match (texts.next(), texts.next()) {
+                (None, _) => Cow::Borrowed(""),
+                (Some(only), None) => Cow::Borrowed(only),
+                (Some(_), Some(_)) => Cow::Owned(extract_text_from_user(message)),
+            }
+        }
     }
 }
 

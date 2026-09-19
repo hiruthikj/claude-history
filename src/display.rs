@@ -129,20 +129,24 @@ pub fn display_conversation_plain(file_path: &Path, options: &DisplayOptions) ->
 /// agent id.
 fn write_plain_turn(writer: &mut dyn Write, turn: &Turn) -> io::Result<()> {
     let (indent, speaker) = match (&turn.subagent, &turn.speaker) {
-        (Some(id), Speaker::User) => ("  ", format!("[{id}] User")),
+        (Some(id), Speaker::User | Speaker::Metadata { .. }) => ("  ", format!("[{id}] User")),
         (Some(id), Speaker::Assistant { .. }) => ("  ", format!("[{id}] Agent")),
-        (Some(id), Speaker::Metadata { label }) => ("  ", format!("[{id}] {label}")),
-        (None, Speaker::User) => ("", "You".to_owned()),
+        (None, Speaker::User | Speaker::Metadata { .. }) => ("", "You".to_owned()),
         (None, Speaker::Assistant { name }) => {
             ("", name.clone().unwrap_or_else(|| "Claude".to_owned()))
         }
-        (None, Speaker::Metadata { label }) => ("", label.clone()),
     };
     let body_indent = format!("{indent}  ");
 
     for part in &turn.parts {
         match part {
-            Part::Text(text) => writeln!(writer, "{indent}{speaker}: {text}")?,
+            // Pi/OMP metadata reads as a labelled user line, as in exports.
+            Part::Text(text) => match &turn.speaker {
+                Speaker::Metadata { label } => {
+                    writeln!(writer, "{indent}{speaker}: [{label}] {text}")?
+                }
+                _ => writeln!(writer, "{indent}{speaker}: {text}")?,
+            },
             Part::Thinking(text) => writeln!(writer, "{indent}Thinking: {text}")?,
             Part::ToolCall { name, input } => {
                 let formatted = tool_format::format_tool_call(name, input, PLAIN_CONTENT_WIDTH);
@@ -200,6 +204,20 @@ mod tests {
                 vec![Part::Text("yo".into()), Part::Thinking("why".into())]
             )),
             "Pi: yo\nThinking: why\n\n"
+        );
+    }
+
+    #[test]
+    fn plain_metadata_matches_the_export_form() {
+        assert_eq!(
+            plain(turn(
+                Speaker::Metadata {
+                    label: "Compaction".into()
+                },
+                None,
+                vec![Part::Text("summary".into())]
+            )),
+            "You: [Compaction] summary\n\n"
         );
     }
 
