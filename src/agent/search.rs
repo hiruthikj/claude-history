@@ -1,4 +1,5 @@
 use crate::agent::diagnostic::{AgentWarning, format_warning_records};
+use crate::agent::records::{Cut, Response};
 use crate::agent::refs::{AgentConversationKey, ResolvedConversation};
 use crate::agent::retrieval::{
     AgentHitRenderOptions, AgentHitSource, AgentRetrievalOptions, AgentSearchHit as RetrievalHit,
@@ -214,41 +215,51 @@ pub fn format_agent_output_with_warnings(
             warning_records.len()
         )
     };
-    let mut rendered = if output.protocol == AgentProtocolKind::Search && !output.flat {
-        format!(
-            "protocol {protocol} mode={} cut=none chars={} policy=per-hit groups={} hits={}{}\n",
-            mode_atom(output.mode),
-            budget_atom(output.budget),
-            output.groups.len(),
-            hits.len(),
-            warning_suffix
-        )
+    let grouped = output.protocol == AgentProtocolKind::Search && !output.flat;
+    let groups_atom = if grouped {
+        format!(" groups={}", output.groups.len())
     } else {
+        String::new()
+    };
+    let header = |cut: Option<&Cut>| {
+        let (cut_atom, omitted) = match cut {
+            None => ("none", String::new()),
+            Some(cut) => ("tail", format!(" omitted-lines={}", cut.omitted_lines)),
+        };
         format!(
-            "protocol {protocol} mode={} cut=none chars={} policy=per-hit hits={}{}\n",
+            "protocol {protocol} mode={} cut={cut_atom} chars={} policy=per-hit{groups_atom} hits={}{warning_suffix}{omitted}\n",
             mode_atom(output.mode),
             budget_atom(output.budget),
             hits.len(),
-            warning_suffix
         )
     };
-    rendered.push_str(&format!(
+    let recovery = if let Some(target) = &output.target {
+        format!(
+            "continue within ref={} action=narrow-query-or-increase-budget\n",
+            crate::agent::protocol::escape_atom(&target.conversation_ref)
+        )
+    } else {
+        "continue search action=narrow-scope-or-increase-budget\n".to_string()
+    };
+    let cut_footer = |_: &Cut| recovery.clone();
+    let mut units = Vec::new();
+    units.push(format!(
         "query text={} hits={}\n",
         crate::agent::protocol::escape_atom(&output.query),
         hits.len()
     ));
     if let Some(target) = &output.target {
-        rendered.push_str(&format!(
+        units.push(format!(
             "conversation project={} uuid={} ref={}\n",
             crate::agent::protocol::escape_atom(&target.project_id),
             crate::agent::protocol::escape_atom(&target.conversation_uuid),
             crate::agent::protocol::escape_atom(&target.conversation_ref)
         ));
     }
-    if output.protocol == AgentProtocolKind::Search && !output.flat {
-        rendered.push_str(&format!("groups count={}\n", output.groups.len()));
+    if grouped {
+        units.push(format!("groups count={}\n", output.groups.len()));
         for (index, group) in output.groups.iter().enumerate() {
-            rendered.push_str(&format!(
+            units.push(format!(
                 "conversation rank={} project={} uuid={} ref={} score={:.6}{} hits={} total={} | {}\n",
                 index + 1,
                 crate::agent::protocol::escape_atom(&group.project_id),
@@ -260,87 +271,37 @@ pub fn format_agent_output_with_warnings(
                 group.total_hits,
                 protocol_snippet(&group.title, AGENT_SEARCH_TITLE_CHARS)
             ));
-            for hit in &group.hits {
-                push_hit_lines(&mut rendered, hit);
-            }
+            units.extend(group.hits.iter().map(hit_unit));
         }
-        for warning in &warning_records {
-            rendered.push_str(warning);
-        }
-        return bound_agent_output(output, rendered, output.budget);
-    }
-
-    for hit in hits {
-        rendered.push_str(&format!(
-            "title project={} uuid={} ref={} | {}\n",
-            crate::agent::protocol::escape_atom(&hit.project_id),
-            crate::agent::protocol::escape_atom(&hit.conversation_uuid),
-            crate::agent::protocol::escape_atom(&hit.conversation_ref),
-            protocol_snippet(&hit.title, AGENT_SEARCH_TITLE_CHARS)
-        ));
-        push_hit_lines(&mut rendered, hit);
-    }
-    for warning in &warning_records {
-        rendered.push_str(warning);
-    }
-    bound_agent_output(output, rendered, output.budget)
-}
-
-fn bound_agent_output(
-    output: &AgentSearchOutput,
-    rendered: String,
-    budget: Option<usize>,
-) -> String {
-    let Some(budget) = budget else {
-        return rendered;
-    };
-    if rendered.chars().count() <= budget {
-        return rendered;
-    }
-
-    let lines = rendered.lines().collect::<Vec<_>>();
-    let mut records = Vec::new();
-    let mut index = 1;
-    while index < lines.len() {
-        let end = if lines[index].starts_with("hit ") && index + 1 < lines.len() {
-            index + 2
-        } else {
-            index + 1
-        };
-        records.push(lines[index..end].join("\n") + "\n");
-        index = end;
-    }
-    let recovery = if let Some(target) = &output.target {
-        format!(
-            "continue within ref={} action=narrow-query-or-increase-budget\n",
-            crate::agent::protocol::escape_atom(&target.conversation_ref)
-        )
     } else {
-        "continue search action=narrow-scope-or-increase-budget\n".to_string()
-    };
-    while !records.is_empty() {
-        let omitted = lines.len().saturating_sub(
-            1 + records
-                .iter()
-                .map(|record| record.lines().count())
-                .sum::<usize>(),
-        );
-        let header =
-            lines[0].replace("cut=none", "cut=tail") + &format!(" omitted-lines={omitted}\n");
-        let candidate = header + &records.concat() + &recovery;
-        if candidate.chars().count() <= budget {
-            return candidate;
+        for hit in &hits {
+            units.push(format!(
+                "title project={} uuid={} ref={} | {}\n",
+                crate::agent::protocol::escape_atom(&hit.project_id),
+                crate::agent::protocol::escape_atom(&hit.conversation_uuid),
+                crate::agent::protocol::escape_atom(&hit.conversation_ref),
+                protocol_snippet(&hit.title, AGENT_SEARCH_TITLE_CHARS)
+            ));
+            units.push(hit_unit(hit));
         }
-        records.pop();
     }
-    let header = lines[0].replace("cut=none", "cut=tail")
-        + &format!(" omitted-lines={}\n", lines.len().saturating_sub(1));
-    let candidate = header + &recovery;
-    if candidate.chars().count() <= budget {
-        candidate
-    } else {
-        candidate.chars().take(budget).collect()
+    units.extend(warning_records.iter().cloned());
+    let all_cut = Cut {
+        kept_units: 0,
+        omitted_units: units.len(),
+        omitted_lines: units.iter().map(|unit| unit.lines().count()).sum(),
+    };
+    let fallback = || header(Some(&all_cut)) + &recovery;
+
+    Response {
+        budget: output.budget,
+        header: &header,
+        units,
+        whole_trailer: String::new(),
+        cut_footer: &cut_footer,
+        fallback: &fallback,
     }
+    .render()
 }
 
 fn budget_atom(budget: Option<usize>) -> String {
@@ -370,7 +331,9 @@ fn score_breakdown_atoms(breakdown: Option<SemanticScoreBreakdown>) -> String {
     })
 }
 
-fn push_hit_lines(rendered: &mut String, hit: &AgentOutputHit) {
+/// A hit and its read recipe: one unit, never split by truncation.
+fn hit_unit(hit: &AgentOutputHit) -> String {
+    let mut rendered = String::new();
     rendered.push_str(&format!(
         "hit project={} uuid={} ref={} anchors={} source={} score={:.6}{} focus=m{}..m{} | {}\n",
         crate::agent::protocol::escape_atom(&hit.project_id),
@@ -393,6 +356,7 @@ fn push_hit_lines(rendered: &mut String, hit: &AgentOutputHit) {
         hit.focus_range.end,
         render_option_atoms(hit.render_options)
     ));
+    rendered
 }
 
 fn protocol_snippet(text: &str, limit: usize) -> String {

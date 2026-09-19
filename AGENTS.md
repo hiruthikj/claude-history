@@ -177,8 +177,12 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
 - `ch_` refs (`agent/refs.rs`) and `ma_` anchors (`agent/transcript.rs`) are
   hashes over namespaced inputs; `ma_` embeds the full `ch_` digest. Changing
   `REF_NAMESPACE` or the digest scheme invalidates every handle and anchor.
-- Output is budgeted to a hard character cap (`chars=`); output that does not
-  end in a newline is reported as `budget-too-small`. All errors exit 1 with
+- Output is budgeted to a hard character cap (`chars=`) by
+  `agent/records.rs::Response`: formatters supply a header (whole and cut
+  forms), record units and a recovery footer; a `hit` and its `read` recipe
+  are one unit so truncation never separates them. `read` keeps its own
+  body-trimming selection (`protocol.rs::select_for_budget`). Output that
+  does not end in a newline is reported as `budget-too-small`. All errors exit 1 with
   one `protocol agent-error` line on stderr. Semantic modes also print
   progress to stderr on success.
 - Visibility flags (`--tools` etc.) are OR'd with `[agent]` config; config can
