@@ -94,6 +94,7 @@ mod tests {
             semantic_turns: vec![],
             semantic_turn_ranges: vec![],
             search_text_lower: String::new(),
+            dialogue_text_lower: String::new(),
             project_name: Some("project-a".to_string()),
             project_path: None,
             cwd: None,

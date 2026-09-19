@@ -114,6 +114,9 @@ pub struct Conversation {
     pub semantic_turn_ranges: Vec<crate::agent::refs::MessageRange>,
     /// Pre-normalized lowercase search text (avoids re-normalizing on every startup)
     pub search_text_lower: String,
+    /// Pre-normalized visible user/assistant prose (no tool blocks, no injected
+    /// `<system-reminder>` spans); the lexical "dialogue" field
+    pub dialogue_text_lower: String,
     pub project_name: Option<String>,
     pub project_path: Option<PathBuf>,
     /// The working directory extracted from the JSONL file (the actual cwd)

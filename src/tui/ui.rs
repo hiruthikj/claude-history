@@ -2724,6 +2724,7 @@ mod tests {
             semantic_turns: vec!["semantic visible text".to_string()],
             semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: "lexical preview sentinel".to_string(),
+            dialogue_text_lower: String::new(),
             project_name: Some("project sentinel".to_string()),
             project_path: None,
             cwd: Some(PathBuf::from("/cwd/sentinel")),

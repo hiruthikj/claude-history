@@ -693,6 +693,16 @@ fn conversation_from_agent_transcript(
         .collect::<Vec<_>>()
         .join(" ... ");
     let full_text = message_text.join(" ");
+    let dialogue_text = transcript
+        .messages
+        .iter()
+        .flat_map(|message| message.parts.iter())
+        .filter_map(|part| match part {
+            agent::transcript::AgentMessagePart::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let timestamp = std::fs::metadata(&transcript.path)
         .and_then(|metadata| metadata.modified())
         .map(chrono::DateTime::<chrono::Local>::from)
@@ -713,6 +723,7 @@ fn conversation_from_agent_transcript(
         preview_first: preview,
         preview_last,
         search_text_lower: crate::search::normalize_for_search(&full_text),
+        dialogue_text_lower: crate::search::normalize_for_search(&dialogue_text),
         full_text,
         agent_search_text: String::new(),
         semantic_route_text,
@@ -919,6 +930,7 @@ fn stripped_semantic_conversation(
         semantic_turns,
         semantic_turn_ranges,
         search_text_lower: String::new(),
+        dialogue_text_lower: String::new(),
         project_name: None,
         project_path: None,
         cwd: None,

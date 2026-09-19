@@ -17,7 +17,7 @@ use crate::cli::DebugLevel;
 use crate::debug;
 use crate::error::Result;
 use crate::search::normalize_for_search;
-use crate::semantic::filter::{SemanticTurnRole, filter_turn};
+use crate::semantic::filter::{SemanticTurnRole, filter_turn, strip_structural_tag_spans};
 use chrono::{DateTime, Local};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -155,6 +155,9 @@ pub fn process_conversation_reader<R: BufRead>(
     let mut semantic_turns = Vec::new();
     let mut semantic_turn_ranges = Vec::new();
     let mut preview_parts = Vec::new();
+    // Visible user/assistant prose only (no tool blocks); feeds the lexical
+    // dialogue field so words in the conversation outrank words in tool output.
+    let mut dialogue_parts = Vec::new();
     let mut user_messages = Vec::new();
     let mut seen_real_user_message = false;
     let mut skip_next_assistant = false;
@@ -237,6 +240,7 @@ pub fn process_conversation_reader<R: BufRead>(
 
                         if !preview_text.is_empty() {
                             user_messages.push(preview_text.clone());
+                            dialogue_parts.push(strip_structural_tag_spans(&preview_text));
                         }
 
                         // Check for skill invocations first - extract clean preview
@@ -326,6 +330,9 @@ pub fn process_conversation_reader<R: BufRead>(
 
                         if !search_text.is_empty() {
                             all_parts.push(search_text);
+                        }
+                        if !preview_text.is_empty() {
+                            dialogue_parts.push(preview_text.clone());
                         }
 
                         // Skip this assistant message if it follows a warmup user message
@@ -540,6 +547,8 @@ pub fn process_conversation_reader<R: BufRead>(
 
     // Pre-normalize search text to avoid re-normalizing on every startup
     let search_text_lower = normalize_for_search(&full_text);
+    let dialogue_text_lower =
+        normalize_for_search(&normalize_whitespace(&dialogue_parts.join(" ")));
 
     let semantic_pairs = semantic_turns
         .into_iter()
@@ -594,6 +603,7 @@ pub fn process_conversation_reader<R: BufRead>(
         semantic_turns,
         semantic_turn_ranges,
         search_text_lower,
+        dialogue_text_lower,
         project_name: None,
         project_path: None,
         cwd: extracted_cwd,
@@ -1534,6 +1544,25 @@ mod tests {
             "Text blocks should still be in preview: {}",
             conv.preview
         );
+    }
+
+    #[test]
+    fn dialogue_text_excludes_tool_results_and_injected_spans() {
+        let content = [
+            user_msg_with_tool_result(
+                "how does the cache work <system-reminder>injected boilerplate</system-reminder>",
+                "verbose tool output mentioning cache",
+            ),
+            assistant_msg("The cache is keyed by ```code fence kept``` blake3"),
+        ]
+        .join("\n");
+
+        let conv = parse_jsonl(&content).unwrap().unwrap();
+        assert_eq!(
+            conv.dialogue_text_lower,
+            "how does the cache work the cache is keyed by ```code fence kept``` blake3"
+        );
+        assert!(conv.search_text_lower.contains("verbose tool output"));
     }
 
     #[test]

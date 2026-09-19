@@ -371,6 +371,7 @@ mod tests {
             semantic_turns: vec![full_text.to_string()],
             semantic_turn_ranges: vec![crate::agent::refs::MessageRange::single(1)],
             search_text_lower: normalize_for_search(full_text),
+            dialogue_text_lower: normalize_for_search(full_text),
             project_name: None,
             project_path: None,
             cwd: None,

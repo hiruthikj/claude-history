@@ -34,6 +34,7 @@ pub fn one_message_conversation(
         semantic_turns: vec![text.to_string()],
         semantic_turn_ranges: vec![MessageRange::single(1)],
         search_text_lower: normalize_for_search(&full_text),
+        dialogue_text_lower: normalize_for_search(text),
         project_name: project.map(str::to_string),
         project_path: None,
         cwd: None,

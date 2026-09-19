@@ -306,20 +306,26 @@ fn run() -> Result<()> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("?");
             eprintln!(
-                "#{:2} score={:.2} freshness={:.2} | {} | {} | {} ago",
+                "#{:2} score={:.2} freshness={:.2} verbatim={:.2} | {} | {} | {} ago",
                 rank + 1,
                 debug.total,
                 debug.freshness,
+                debug.verbatim,
                 project,
                 session,
                 age_str
             );
 
             for field in &debug.fields {
-                if field.tf_score > 0.0 || field.adjacency_score > 0.0 {
+                if !field.is_zero() {
                     eprintln!(
-                        "     {}: tf={:.2} adj={:.2} (w={:.1})",
-                        field.name, field.tf_score, field.adjacency_score, field.weight
+                        "     {}: tf={:.2} exact={:.2} adj={:.2} phrase={:.2} (w={:.1})",
+                        field.name,
+                        field.tf_score,
+                        field.exact_score,
+                        field.adjacency_score,
+                        field.phrase_score,
+                        field.weight
                     );
                     for (word, tf, ln_score) in &field.word_details {
                         if *tf > 0 {
@@ -968,6 +974,7 @@ mod agent_command_tests {
             semantic_turns: vec!["session".to_string()],
             semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
             search_text_lower: "session".to_string(),
+            dialogue_text_lower: String::new(),
             project_name: Some("project-a".to_string()),
             project_path: None,
             cwd: None,
@@ -1548,6 +1555,7 @@ mod agent_command_tests {
             semantic_turns: vec!["visible semantic".to_string()],
             semantic_turn_ranges: vec![agent::refs::MessageRange::single(1)],
             search_text_lower: "visible semantic".to_string(),
+            dialogue_text_lower: String::new(),
             project_name: Some("project-a".to_string()),
             project_path: None,
             cwd: None,

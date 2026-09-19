@@ -133,7 +133,18 @@ after the terminal guard is dropped.
 - `search/query.rs::ParsedQuery` is the shared handoff: quoted spans are
   smart-case exact `Literal`s (hard filters), unquoted words are scored. An
   unquoted term containing `_` is promoted to an exact literal
-  (`search/lexical.rs`), which surprises people.
+  (`search/lexical.rs`) *and* its split words are still scored.
+- Lexical score (`search/lexical.rs::score_impl`): per field (title 5,
+  project 4, summary 4, dialogue 3, body 1) `ln(1+tf)` capped at tf=10, plus
+  whole-word, adjacency and ≥3-word phrase bonuses scaled by field weight; a
+  flat verbatim bonus (raw unquoted query found in `full_text`/project name,
+  `VerbatimNeedle` decides case sensitivity) and additive freshness (max 2.0,
+  7-day half-life). Body tf saturates on tool output for almost every hit,
+  so the `dialogue_text_lower` field (visible user/assistant prose, tag spans
+  stripped in `history/parser.rs`) is what separates "about X" from "mentions
+  X". Word-boundary rules live in `text_match.rs` and are shared with
+  `search/evidence.rs` highlighting and the agent retrieval paths: a query
+  word starting with punctuation does not require a word start.
 - Mode precedence (`search/mode.rs`, `agent/service.rs`): CLI > `[agent].mode`
   > `[search].mode` > deprecated `[tui].semantic_search`. A quoted-only query
   forces Exact. The TUI collapses Hybrid/Exact to Lexical.
