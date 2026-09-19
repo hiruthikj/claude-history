@@ -194,13 +194,15 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
   `invalidate_search_generation` or stale worker responses get applied.
   Semantic mode shows the lexical result for the same generation first, then
   replaces it.
-- There are three renderers: `tui/viewer/` (source-aware via
-  `normalized_log_entries`; also used by `--render`), `display.rs`
-  (post-selection and `--plain`; parses raw `LogEntry` lines, so it only
-  understands Claude JSONL), and `tui/export.rs::generate_ledger`. They share
-  `markdown/layout.rs`, `syntax.rs`, `theme.rs`, and `tool_format.rs`.
-  `NAME_WIDTH = 9` is duplicated in `runtime.rs`, `viewer/mod.rs`,
-  `display.rs`, and `export.rs`.
+- Two transcript walkers, both over `history::normalized_log_entries` (so
+  every renderer understands Claude, Pi and OMP): `tui/viewer/` produces
+  styled `RenderedLine`s and is the only ledger — the TUI, post-selection
+  display, `--render` and the ledger export are all sinks over its lines;
+  `turns.rs` projects visible `Turn`s/`Part`s (visibility applied, assistant
+  parts ordered prose → tools → thinking) for the text renderers (`--plain`,
+  plain/markdown export, clipboard). Command-tag grammar (`/clear` wrappers,
+  skill prompts, `<command-name>`) lives only in `command_tags.rs`.
+  `viewer::NAME_WIDTH`/`SEPARATOR_WIDTH` are the single width constants.
 - `ToolDisplayMode::Hidden` means "summary". `show_thinking` also gates
   subagent and agent-progress visibility in both renderers.
 - Width math must use `unicode-width`, not byte length.

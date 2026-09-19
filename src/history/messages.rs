@@ -11,6 +11,7 @@ use crate::claude::{
     AgentContent, AgentProgressData, AssistantMessage, ContentBlock, LogEntry, UserContent,
     UserMessage, extract_text_from_user,
 };
+use crate::command_tags::{parse_command_name, parse_command_name_and_args};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -181,34 +182,11 @@ pub fn is_clear_metadata_message(message: &str) -> bool {
 /// Extract a clean preview from a skill invocation message (e.g. "/consult how to do X?").
 /// Returns None if the message is not a skill invocation or is a /clear command.
 pub fn extract_skill_preview(message: &str) -> Option<String> {
-    let trimmed = message.trim();
-
-    let start = trimmed.find("<command-name>")?;
-    let end = trimmed.find("</command-name>")?;
-    let content_start = start + "<command-name>".len();
-    if content_start >= end {
-        return None;
-    }
-
-    let command_name = &trimmed[content_start..end];
+    let command_name = parse_command_name(message)?;
     if !command_name.starts_with('/') || command_name == "/clear" {
         return None;
     }
-
-    // Extract command args if present
-    if let Some(args_start) = trimmed.find("<command-args>")
-        && let Some(args_end) = trimmed.find("</command-args>")
-    {
-        let args_content_start = args_start + "<command-args>".len();
-        if args_content_start < args_end {
-            let args = trimmed[args_content_start..args_end].trim();
-            if !args.is_empty() {
-                return Some(format!("{} {}", command_name, args));
-            }
-        }
-    }
-
-    Some(command_name.to_string())
+    parse_command_name_and_args(message)
 }
 
 #[cfg(test)]

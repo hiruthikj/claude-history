@@ -1,6 +1,7 @@
 mod agent;
 mod claude;
 mod cli;
+mod command_tags;
 mod config;
 mod debug;
 mod debug_log;
@@ -17,6 +18,7 @@ mod text_match;
 mod time_filter;
 mod tool_format;
 mod tui;
+mod turns;
 mod update;
 
 use clap::Parser;
@@ -377,11 +379,10 @@ fn run() -> Result<()> {
         let display_options = display::DisplayOptions {
             no_tools: !show_tools,
             show_thinking,
-            debug_level: args.debug,
             use_pager,
             no_color: args.no_color,
         };
-        return display::render_to_terminal(render_path, &display_options);
+        return display::display_conversation(render_path, &display_options);
     }
 
     // Handle direct file input mode
@@ -545,7 +546,6 @@ fn run() -> Result<()> {
     let display_options = display::DisplayOptions {
         no_tools: !show_tools,
         show_thinking,
-        debug_level: args.debug,
         use_pager,
         no_color: args.no_color,
     };
