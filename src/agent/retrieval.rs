@@ -92,14 +92,14 @@ pub fn retrieve_agent_hits(
             conversation_ref: None,
             timestamp: None,
         },
-        query,
+        &ParsedQuery::parse(query),
         options,
     )
 }
 
 pub fn retrieve_agent_hits_for_target(
     target: AgentTranscriptSearchTarget<'_>,
-    query: &str,
+    query: &ParsedQuery,
     options: AgentRetrievalOptions,
 ) -> Vec<AgentSearchHit> {
     retrieve_agent_hit_candidates(target, query, options)
@@ -114,6 +114,7 @@ pub fn retrieve_agent_hits_for_targets(
     query: &str,
     options: AgentRetrievalOptions,
 ) -> Vec<AgentSearchHit> {
+    let parsed = ParsedQuery::parse(query);
     let mut candidates = targets
         .iter()
         .flat_map(|target| {
@@ -123,13 +124,12 @@ pub fn retrieve_agent_hits_for_targets(
                     conversation_ref: target.conversation_ref,
                     timestamp: target.timestamp,
                 },
-                query,
+                &parsed,
                 options,
             )
         })
         .collect::<Vec<_>>();
-    let prefer_dialogue = ParsedQuery::parse(query).is_quoted_only();
-    sort_candidates(&mut candidates, prefer_dialogue);
+    sort_candidates(&mut candidates, parsed.is_quoted_only());
     candidates.truncate(options.limit);
     candidates
         .into_iter()
@@ -139,14 +139,13 @@ pub fn retrieve_agent_hits_for_targets(
 
 fn retrieve_agent_hit_candidates(
     target: AgentTranscriptSearchTarget<'_>,
-    query: &str,
+    parsed: &ParsedQuery,
     options: AgentRetrievalOptions,
 ) -> Vec<Candidate> {
     if options.limit == 0 || target.transcript.messages.is_empty() {
         return Vec::new();
     }
 
-    let parsed = ParsedQuery::parse(query);
     if parsed.is_effectively_empty() {
         return Vec::new();
     }
@@ -157,9 +156,9 @@ fn retrieve_agent_hit_candidates(
     }
 
     let mut candidates = if parsed.is_quoted_only() {
-        exact_candidates(&segments, target, &parsed, options)
+        exact_candidates(&segments, target, parsed, options)
     } else {
-        lexical_candidates(&segments, target, &parsed, options)
+        lexical_candidates(&segments, target, parsed, options)
     };
     sort_candidates(&mut candidates, parsed.is_quoted_only());
     candidates.truncate(options.limit);

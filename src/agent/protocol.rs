@@ -55,21 +55,7 @@ pub enum ReadSlice {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolOptions {
     pub budget: Option<usize>,
-    pub tools: bool,
-    pub tool_results: bool,
-    pub thinking: bool,
-    pub subagents: bool,
-}
-
-impl ProtocolOptions {
-    pub fn visibility(self) -> ContentVisibility {
-        ContentVisibility {
-            tools: self.tools,
-            tool_results: self.tool_results,
-            thinking: self.thinking,
-            subagents: self.subagents,
-        }
-    }
+    pub visibility: ContentVisibility,
 }
 
 #[derive(Clone, Debug)]
@@ -141,7 +127,7 @@ pub fn format_read_with_warnings(
             "protocol agent-read cut={} chars={} policy={} omit={}{}\n",
             escape_atom(cut),
             budget_atom(options.budget),
-            options.visibility().atom(),
+            options.visibility.atom(),
             omitted_message_ranges(messages, selected),
             warning_suffix
         ));
@@ -228,7 +214,7 @@ pub fn format_outline_with_warnings(
     output.push_str(&format!(
         "protocol agent-outline cut=none chars={} policy={}{}\n",
         budget_atom(options.budget),
-        options.visibility().atom(),
+        options.visibility.atom(),
         warning_suffix
     ));
     output.push_str(&conversation_record(resolved));
@@ -287,7 +273,7 @@ pub fn format_outline_with_warnings(
             let mut truncated = format!(
                 "protocol agent-outline cut=tail chars={} policy={} omitted-records={} warnings={} warnings-emitted=0\n",
                 budget,
-                options.visibility().atom(),
+                options.visibility.atom(),
                 omitted,
                 warning_count
             );
@@ -317,7 +303,7 @@ pub fn format_outline_with_warnings(
         return format!(
             "protocol agent-outline cut=tail chars={} policy={} omitted-records={}\n",
             budget,
-            options.visibility().atom(),
+            options.visibility.atom(),
             visible.len()
         )
         .chars()
@@ -388,7 +374,7 @@ fn render_message<'a>(
     message: &'a AgentMessage,
     options: ProtocolOptions,
 ) -> Option<RenderedMessage<'a>> {
-    let visibility = options.visibility();
+    let visibility = options.visibility;
     if !visibility.message_is_visible(message) {
         return None;
     }
@@ -982,10 +968,7 @@ mod tests {
     fn options() -> ProtocolOptions {
         ProtocolOptions {
             budget: Some(6000),
-            tools: false,
-            tool_results: false,
-            thinking: false,
-            subagents: false,
+            visibility: ContentVisibility::default(),
         }
     }
 
@@ -1492,9 +1475,12 @@ mod tests {
             None,
             None,
             ProtocolOptions {
-                tools: true,
-                tool_results: true,
-                thinking: true,
+                visibility: ContentVisibility {
+                    tools: true,
+                    tool_results: true,
+                    thinking: true,
+                    subagents: false,
+                },
                 ..options()
             },
         )
@@ -1585,7 +1571,10 @@ mod tests {
             None,
             None,
             ProtocolOptions {
-                subagents: true,
+                visibility: ContentVisibility {
+                    subagents: true,
+                    ..ContentVisibility::default()
+                },
                 ..options()
             },
         )

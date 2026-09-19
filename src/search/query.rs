@@ -44,6 +44,23 @@ impl ParsedQuery {
         }
     }
 
+    /// The whole query as one exact literal, as if the caller had quoted it:
+    /// what exact mode matches for an unquoted query. Embedded quotes are
+    /// dropped; `raw` stays the text as typed.
+    pub fn exact_phrase(query: &str) -> Self {
+        let phrase = query.replace('"', "");
+        let literals = if phrase.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![Literal::new(phrase)]
+        };
+        Self {
+            raw: query.to_string(),
+            unquoted: String::new(),
+            literals,
+        }
+    }
+
     pub fn raw(&self) -> &str {
         &self.raw
     }
@@ -195,6 +212,32 @@ mod tests {
         let all = parsed.all_literals();
         assert_eq!(all[0].text(), "Exact");
         assert_eq!(all[1].text(), "Audio_Generation");
+    }
+
+    #[test]
+    fn exact_phrase_matches_quoting_the_whole_query() {
+        for query in [
+            "cache warming",
+            "cache \"Quoted\" tail",
+            " padded ",
+            "\"\"",
+            "   ",
+        ] {
+            let quoted = ParsedQuery::parse(&format!("\"{}\"", query.replace('"', "")));
+            let phrase = ParsedQuery::exact_phrase(query);
+            assert_eq!(phrase.literals(), quoted.literals(), "{query:?}");
+            assert_eq!(phrase.unquoted(), "");
+            assert_eq!(
+                phrase.is_quoted_only(),
+                quoted.is_quoted_only(),
+                "{query:?}"
+            );
+            assert_eq!(phrase.raw(), query);
+        }
+        assert_eq!(
+            ParsedQuery::exact_phrase("cache \"Quoted\" tail").literals()[0].case_mode(),
+            CaseMode::Sensitive
+        );
     }
 
     #[test]

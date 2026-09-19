@@ -569,6 +569,7 @@ mod agent_command_tests {
     };
     use crate::agent::test_support::{assistant_jsonl_line as assistant, user_jsonl_line as user};
     use crate::search::mode::SearchMode;
+    use crate::search::query::ParsedQuery;
     use cli::{AgentOutlineArgs, AgentOutputFlags, AgentReadArgs};
 
     #[test]
@@ -900,11 +901,9 @@ mod agent_command_tests {
             search_mode: cli::AgentSearchModeArgs::explicit(SearchMode::Lexical),
         };
         let within_request = agent::search::AgentWithinRequest {
-            query: within_args.query.clone(),
+            query: ParsedQuery::parse(&within_args.query),
+            mode: within_args.mode_override().unwrap(),
             top: within_args.top.unwrap(),
-            cli_mode: within_args.mode_override(),
-            config_mode: None,
-            tui_semantic_search: None,
             budget: None,
         };
         let within = agent::search::format_agent_output(&agent::search::run_within_search(
@@ -1065,12 +1064,11 @@ mod agent_command_tests {
         let (keys, resolved) = resolved_test_conversation(path.clone());
         let conversation = stubbed_conversation(path, 4);
         let transcript = load_transcript(&resolved.key.path);
+        let query = ParsedQuery::parse("\"hidden_exact_tool_needle\"");
         let within_request = agent::search::AgentWithinRequest {
-            query: "\"hidden_exact_tool_needle\"".to_string(),
+            mode: agent::search::effective_agent_mode(&query, SearchMode::Lexical),
+            query,
             top: 1,
-            cli_mode: None,
-            config_mode: None,
-            tui_semantic_search: None,
             budget: None,
         };
         let within = agent::search::format_agent_output(&agent::search::run_within_search(
@@ -1127,11 +1125,9 @@ mod agent_command_tests {
             "final assistant text",
         );
         let within_request = agent::search::AgentWithinRequest {
-            query: "final assistant".to_string(),
+            query: ParsedQuery::parse("final assistant"),
+            mode: SearchMode::Semantic,
             top: 1,
-            cli_mode: Some(SearchMode::Semantic),
-            config_mode: None,
-            tui_semantic_search: None,
             budget: None,
         };
         let within = agent::search::format_agent_output(&agent::search::run_within_search(
@@ -1184,11 +1180,9 @@ mod agent_command_tests {
             "final assistant text",
         );
         let within_request = agent::search::AgentWithinRequest {
-            query: "final assistant".to_string(),
+            query: ParsedQuery::parse("final assistant"),
+            mode: SearchMode::Semantic,
             top: 1,
-            cli_mode: Some(SearchMode::Semantic),
-            config_mode: None,
-            tui_semantic_search: None,
             budget: None,
         };
         let within = agent::search::format_agent_output(&agent::search::run_within_search(
@@ -1238,12 +1232,11 @@ mod agent_command_tests {
             "\"subagent_unique_needle\"",
             chrono::Local::now(),
         );
+        let query = ParsedQuery::parse("\"subagent_unique_needle\"");
         let request = agent::search::AgentSearchRequest {
-            query: "\"subagent_unique_needle\"".to_string(),
+            mode: agent::search::effective_agent_mode(&query, SearchMode::Lexical),
+            query,
             top: 1,
-            cli_mode: None,
-            config_mode: None,
-            tui_semantic_search: None,
             flat: false,
             hits_per_conversation: 2,
             retrieval_hits_per_conversation: None,
@@ -1675,11 +1668,9 @@ mod agent_command_tests {
             "progress_only_semantic_needle",
         );
         let within_request = agent::search::AgentWithinRequest {
-            query: "progress semantic".to_string(),
+            query: ParsedQuery::parse("progress semantic"),
+            mode: SearchMode::Semantic,
             top: 1,
-            cli_mode: Some(SearchMode::Semantic),
-            config_mode: None,
-            tui_semantic_search: None,
             budget: None,
         };
         let rendered = agent::search::format_agent_output(&agent::search::run_within_search(

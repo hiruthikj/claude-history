@@ -132,6 +132,19 @@ pub fn agent_search(
     search_with_surface(conversations, searchable, query, now, true)
 }
 
+/// [`agent_search`] for a query the caller has already parsed.
+pub fn agent_search_parsed(
+    conversations: &[Conversation],
+    searchable: &[SearchableConversation],
+    parsed: &ParsedQuery,
+    now: DateTime<Local>,
+) -> Vec<usize> {
+    search_debug_with_query(conversations, searchable, parsed, now, true, |_| true)
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect()
+}
+
 fn search_with_surface(
     conversations: &[Conversation],
     searchable: &[SearchableConversation],

@@ -10,9 +10,10 @@ use crate::agent::transcript::AgentTranscript;
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
 use crate::history::MessageRange;
-use crate::search::mode::{SearchMode, SearchModeResolution, resolve_search_mode};
+use crate::search::mode::SearchMode;
 use crate::search::query::ParsedQuery;
 use crate::semantic::types::{SemanticChunkSource, SemanticHit, SemanticScoreBreakdown};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -32,13 +33,13 @@ pub enum AgentSearchScope {
     Local,
 }
 
+/// A global search with its settings already resolved: `mode` is the
+/// [`effective_agent_mode`] for `query`, so nothing below re-derives either.
 #[derive(Clone, Debug)]
 pub struct AgentSearchRequest {
-    pub query: String,
+    pub query: ParsedQuery,
+    pub mode: SearchMode,
     pub top: usize,
-    pub cli_mode: Option<SearchMode>,
-    pub config_mode: Option<SearchMode>,
-    pub tui_semantic_search: Option<bool>,
     pub flat: bool,
     pub hits_per_conversation: usize,
     pub retrieval_hits_per_conversation: Option<usize>,
@@ -48,11 +49,9 @@ pub struct AgentSearchRequest {
 
 #[derive(Clone, Debug)]
 pub struct AgentWithinRequest {
-    pub query: String,
+    pub query: ParsedQuery,
+    pub mode: SearchMode,
     pub top: usize,
-    pub cli_mode: Option<SearchMode>,
-    pub config_mode: Option<SearchMode>,
-    pub tui_semantic_search: Option<bool>,
     pub budget: Option<usize>,
 }
 
@@ -182,21 +181,13 @@ pub fn attach_transcript_metadata(
     }
 }
 
-pub fn effective_agent_mode(
-    query: &str,
-    cli_mode: Option<SearchMode>,
-    config_mode: Option<SearchMode>,
-    tui_semantic_search: Option<bool>,
-) -> SearchMode {
-    let parsed = ParsedQuery::parse(query);
-    if parsed.is_quoted_only() {
+/// The mode a query actually runs in: a quoted-only query is always exact,
+/// otherwise the mode resolved from CLI and config applies.
+pub fn effective_agent_mode(query: &ParsedQuery, resolved: SearchMode) -> SearchMode {
+    if query.is_quoted_only() {
         SearchMode::Exact
     } else {
-        resolve_search_mode(SearchModeResolution {
-            cli_mode,
-            config_mode,
-            tui_semantic_search,
-        })
+        resolved
     }
 }
 
@@ -426,21 +417,10 @@ pub fn run_within_search(
     transcript: &AgentTranscript,
     semantic_hits: &[SemanticHit],
 ) -> AgentSearchOutput {
-    let mode = effective_agent_mode(
-        &request.query,
-        request.cli_mode,
-        request.config_mode,
-        request.tui_semantic_search,
-    );
-    let hits = match mode {
-        SearchMode::Lexical | SearchMode::Exact => retrieval_hits(
-            &request.query,
-            request.top,
-            conversation,
-            resolved,
-            transcript,
-            mode,
-        ),
+    let hits = match request.mode {
+        SearchMode::Lexical | SearchMode::Exact => {
+            return run_within_lexical_search(request, conversation, resolved, transcript);
+        }
         SearchMode::Semantic => semantic_output_hits(
             semantic_hits,
             request.top,
@@ -474,12 +454,41 @@ pub fn run_within_search(
             )
         }
     };
+    within_output(request, hits, resolved, transcript)
+}
 
+/// Lexical (or exact) evidence for a within request regardless of its mode.
+/// The hybrid path falls back to this when semantic search is unavailable,
+/// so the output keeps reporting `request.mode`.
+pub fn run_within_lexical_search(
+    request: &AgentWithinRequest,
+    conversation: &Conversation,
+    resolved: &ResolvedConversation,
+    transcript: &AgentTranscript,
+) -> AgentSearchOutput {
+    let retrieval_mode = lexical_retrieval_mode(request.mode);
+    let hits = retrieval_hits(
+        &retrieval_query(&request.query, retrieval_mode),
+        request.top,
+        conversation,
+        resolved,
+        transcript,
+        retrieval_mode,
+    );
+    within_output(request, hits, resolved, transcript)
+}
+
+fn within_output(
+    request: &AgentWithinRequest,
+    hits: Vec<AgentOutputHit>,
+    resolved: &ResolvedConversation,
+    transcript: &AgentTranscript,
+) -> AgentSearchOutput {
     let mut output = AgentSearchOutput {
         protocol: AgentProtocolKind::Within,
         target: None,
-        query: request.query.clone(),
-        mode,
+        query: request.query.raw().to_string(),
+        mode: request.mode,
         hits,
         groups: Vec::new(),
         flat: true,
@@ -519,16 +528,8 @@ pub fn run_global_lexical_search_reporting(
     load_transcript: impl Fn(&AgentConversationKey) -> Result<AgentTranscript>,
     mut report_error: impl FnMut(&AgentConversationKey, &AppError),
 ) -> Result<AgentSearchOutput> {
-    let mode = effective_agent_mode(
-        &request.query,
-        request.cli_mode,
-        request.config_mode,
-        request.tui_semantic_search,
-    );
-    let retrieval_mode = match mode {
-        SearchMode::Exact => SearchMode::Exact,
-        _ => SearchMode::Lexical,
-    };
+    let retrieval_mode = lexical_retrieval_mode(request.mode);
+    let retrieval_query = retrieval_query(&request.query, retrieval_mode);
     let limit = shortlist_limit(request.top).min(ranked_indices.len());
     let resolved_by_path = crate::agent::refs::resolved_conversations_for_keys(keys)
         .into_iter()
@@ -553,7 +554,7 @@ pub fn run_global_lexical_search_reporting(
         };
         transcripts_loaded += 1;
         hits.extend(retrieval_hits(
-            &request.query,
+            &retrieval_query,
             request
                 .retrieval_hits_per_conversation
                 .unwrap_or_else(|| lexical_per_conversation_candidate_depth(request)),
@@ -583,8 +584,8 @@ pub fn run_global_lexical_search_reporting(
     Ok(AgentSearchOutput {
         protocol: AgentProtocolKind::Search,
         target: None,
-        query: request.query.clone(),
-        mode,
+        query: request.query.raw().to_string(),
+        mode: request.mode,
         hits,
         groups,
         flat: request.flat,
@@ -601,12 +602,6 @@ pub fn run_global_semantic_search(
     inputs: &[AgentConversationInput<'_>],
     semantic_hits: &[SemanticHit],
 ) -> AgentSearchOutput {
-    let mode = effective_agent_mode(
-        &request.query,
-        request.cli_mode,
-        request.config_mode,
-        request.tui_semantic_search,
-    );
     let semantic_order = semantic_conversation_order(semantic_hits, inputs);
     let mut hits = semantic_output_hit_candidates(semantic_hits, inputs);
     sort_output_hits(&mut hits);
@@ -616,8 +611,8 @@ pub fn run_global_semantic_search(
     AgentSearchOutput {
         protocol: AgentProtocolKind::Search,
         target: None,
-        query: request.query.clone(),
-        mode,
+        query: request.query.raw().to_string(),
+        mode: request.mode,
         hits,
         groups,
         flat: request.flat,
@@ -652,7 +647,7 @@ pub fn run_global_hybrid_search(
     AgentSearchOutput {
         protocol: AgentProtocolKind::Search,
         target: None,
-        query: request.query.clone(),
+        query: request.query.raw().to_string(),
         mode: SearchMode::Hybrid,
         hits,
         groups,
@@ -722,26 +717,40 @@ fn lexical_per_conversation_candidate_depth(request: &AgentSearchRequest) -> usi
     .max(1)
 }
 
+/// How transcript retrieval runs for a search mode: exact stays exact, every
+/// other mode retrieves lexically.
+fn lexical_retrieval_mode(mode: SearchMode) -> SearchMode {
+    match mode {
+        SearchMode::Exact => SearchMode::Exact,
+        _ => SearchMode::Lexical,
+    }
+}
+
+/// The query retrieval matches: exact mode treats an unquoted query as one
+/// phrase; quoted-only queries and lexical retrieval use the query as parsed.
+fn retrieval_query(query: &ParsedQuery, retrieval_mode: SearchMode) -> Cow<'_, ParsedQuery> {
+    if retrieval_mode == SearchMode::Exact && !query.is_quoted_only() {
+        Cow::Owned(ParsedQuery::exact_phrase(query.raw()))
+    } else {
+        Cow::Borrowed(query)
+    }
+}
+
 fn retrieval_hits(
-    query: &str,
+    query: &ParsedQuery,
     limit: usize,
     conversation: &Conversation,
     resolved: &ResolvedConversation,
     transcript: &AgentTranscript,
     mode: SearchMode,
 ) -> Vec<AgentOutputHit> {
-    let search_query = if mode == SearchMode::Exact && !ParsedQuery::parse(query).is_quoted_only() {
-        quote_query(query)
-    } else {
-        query.to_string()
-    };
     retrieve_agent_hits_for_target(
         AgentTranscriptSearchTarget {
             transcript,
             conversation_ref: Some(&resolved.reference.canonical()),
             timestamp: Some(conversation.timestamp),
         },
-        &search_query,
+        query,
         AgentRetrievalOptions {
             limit,
             ..AgentRetrievalOptions::default()
@@ -769,7 +778,7 @@ fn retrieval_output_hit(
         score: hit.score,
         evidence_score: hit.score,
         semantic_score_breakdown: None,
-        source: if mode == SearchMode::Exact || ParsedQuery::parse(&hit.preview).is_quoted_only() {
+        source: if mode == SearchMode::Exact {
             AgentHitKind::Exact
         } else {
             AgentHitKind::Lexical
@@ -1244,10 +1253,6 @@ fn source_rank(source: AgentHitKind) -> u8 {
     }
 }
 
-fn quote_query(query: &str) -> String {
-    format!("\"{}\"", query.replace('"', ""))
-}
-
 fn title_for_conversation(conversation: &Conversation) -> String {
     conversation
         .custom_title
@@ -1351,23 +1356,23 @@ mod tests {
     }
 
     fn request(query: &str, mode: Option<SearchMode>) -> AgentWithinRequest {
+        let query = ParsedQuery::parse(query);
+        let mode = effective_agent_mode(&query, mode.unwrap_or_default());
         AgentWithinRequest {
-            query: query.to_string(),
+            query,
+            mode,
             top: 10,
-            cli_mode: mode,
-            config_mode: None,
-            tui_semantic_search: None,
             budget: None,
         }
     }
 
     fn global_request(query: &str, mode: SearchMode, top: usize, flat: bool) -> AgentSearchRequest {
+        let query = ParsedQuery::parse(query);
+        let mode = effective_agent_mode(&query, mode);
         AgentSearchRequest {
-            query: query.to_string(),
+            query,
+            mode,
             top,
-            cli_mode: Some(mode),
-            config_mode: None,
-            tui_semantic_search: None,
             flat,
             hits_per_conversation: 2,
             retrieval_hits_per_conversation: None,
@@ -1681,13 +1686,90 @@ mod tests {
     fn quoted_query_forces_exact_mode() {
         assert_eq!(
             effective_agent_mode(
-                "\"literal needle\"",
-                Some(SearchMode::Semantic),
-                Some(SearchMode::Hybrid),
-                Some(true),
+                &ParsedQuery::parse("\"literal needle\""),
+                SearchMode::Semantic
             ),
             SearchMode::Exact
         );
+        assert_eq!(
+            effective_agent_mode(&ParsedQuery::parse("literal needle"), SearchMode::Semantic),
+            SearchMode::Semantic
+        );
+    }
+
+    #[test]
+    fn plain_query_hits_stay_lexical_when_preview_is_a_quoted_string() {
+        let conv = conversation(&format!("{TEST_UUID}.jsonl"), "quoted title");
+        let resolved = resolved(&format!("{TEST_UUID}.jsonl"));
+        let transcript = transcript(vec![
+            message(1, AgentMessageRole::User, "\"quoted preview only\""),
+            message(2, AgentMessageRole::Assistant, "quoted preview, unquoted"),
+        ]);
+
+        let output = run_within_search(
+            &request("quoted preview", Some(SearchMode::Lexical)),
+            &conv,
+            &resolved,
+            &transcript,
+            &[],
+        );
+
+        assert_eq!(output.hits.len(), 2);
+        assert!(
+            output
+                .hits
+                .iter()
+                .all(|hit| hit.source == AgentHitKind::Lexical),
+            "{:?}",
+            output.hits.iter().map(|hit| hit.source).collect::<Vec<_>>()
+        );
+        assert!(output.hits.iter().any(|hit| hit.preview.starts_with('"')));
+        assert!(!format_agent_output(&output).contains("source=exact"));
+    }
+
+    #[test]
+    fn within_lexical_fallback_keeps_hybrid_mode_with_lexical_hits() {
+        let conv = conversation(&format!("{TEST_UUID}.jsonl"), "title");
+        let resolved = resolved(&format!("{TEST_UUID}.jsonl"));
+        let transcript = transcript(vec![
+            message(1, AgentMessageRole::User, "cache warming answer"),
+            message(2, AgentMessageRole::Assistant, "unrelated"),
+        ]);
+
+        let output = run_within_lexical_search(
+            &request("cache warming", Some(SearchMode::Hybrid)),
+            &conv,
+            &resolved,
+            &transcript,
+        );
+
+        assert_eq!(output.mode, SearchMode::Hybrid);
+        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits[0].source, AgentHitKind::Lexical);
+        assert!(format_agent_output(&output).starts_with("protocol agent-within mode=hybrid "));
+    }
+
+    #[test]
+    fn exact_mode_hits_are_exact_for_an_unquoted_query() {
+        let conv = conversation(&format!("{TEST_UUID}.jsonl"), "title");
+        let resolved = resolved(&format!("{TEST_UUID}.jsonl"));
+        let transcript = transcript(vec![
+            message(1, AgentMessageRole::User, "cache warming answer"),
+            message(2, AgentMessageRole::Assistant, "warming the cache"),
+        ]);
+
+        let output = run_within_search(
+            &request("cache warming", Some(SearchMode::Exact)),
+            &conv,
+            &resolved,
+            &transcript,
+            &[],
+        );
+
+        assert_eq!(output.query, "cache warming");
+        assert_eq!(output.hits.len(), 1);
+        assert_eq!(output.hits[0].source, AgentHitKind::Exact);
+        assert_eq!(output.hits[0].focus_range, MessageRange::single(1));
     }
 
     #[test]
@@ -2372,11 +2454,9 @@ mod tests {
             original_index: 1,
         };
         let request = AgentSearchRequest {
-            query: "semantic".to_string(),
+            query: ParsedQuery::parse("semantic"),
+            mode: SearchMode::Semantic,
             top: 2,
-            cli_mode: Some(SearchMode::Semantic),
-            config_mode: None,
-            tui_semantic_search: None,
             flat: false,
             hits_per_conversation: 1,
             retrieval_hits_per_conversation: None,
@@ -2440,11 +2520,9 @@ mod tests {
             original_index: 1,
         };
         let request = AgentSearchRequest {
-            query: "semantic".to_string(),
+            query: ParsedQuery::parse("semantic"),
+            mode: SearchMode::Semantic,
             top: 2,
-            cli_mode: Some(SearchMode::Semantic),
-            config_mode: None,
-            tui_semantic_search: None,
             flat: false,
             hits_per_conversation: 2,
             retrieval_hits_per_conversation: None,
@@ -2766,7 +2844,7 @@ mod tests {
         let rendered = format_agent_output(&AgentSearchOutput {
             protocol: AgentProtocolKind::Search,
             target: None,
-            query: request.query.clone(),
+            query: request.query.raw().to_string(),
             mode: SearchMode::Lexical,
             hits,
             groups,

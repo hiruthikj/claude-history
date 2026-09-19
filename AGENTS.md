@@ -155,9 +155,11 @@ after the terminal guard is dropped.
   worker precomputes per hit. `ParsedQuery::words`/`identifier_literals` own
   the `_`-promotion rule. `tui/snippet.rs` only fits text around ranges the
   matcher returns; it never re-derives matches.
-- Mode precedence (`search/mode.rs`, `agent/service.rs`): CLI > `[agent].mode`
-  > `[search].mode` > deprecated `[tui].semantic_search`. A quoted-only query
-  forces Exact. The TUI collapses Hybrid/Exact to Lexical.
+- Mode precedence (`search/mode.rs::resolve_search_mode`): CLI > `[agent].mode`
+  > `[search].mode` > deprecated `[tui].semantic_search`. The agent resolves it
+  once per command in `agent/service.rs::AgentSettings::resolve` (with every
+  other agent setting); `agent/search.rs::effective_agent_mode` then forces
+  Exact for a quoted-only query. The TUI collapses Hybrid/Exact to Lexical.
 - "Hybrid" inside `semantic/rank.rs` is cosine + word-overlap bonus. RRF fusion
   of lexical and semantic rankings exists only in `agent/search.rs`.
 - Semantic tests use per-module fake embedders; no test needs the model except
