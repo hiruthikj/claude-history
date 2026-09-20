@@ -168,6 +168,13 @@ after the terminal guard is dropped.
   of lexical and semantic rankings exists only in `agent/search.rs`.
 - Semantic tests use per-module fake embedders; no test needs the model except
   the semantic worker prewarm test noted above.
+- `semantic/fastembed.rs::EmbedThreads` is the caller's choice of ONNX
+  intra-op threads: CLI/agent paths take `AllCores`, the TUI worker
+  `LeaveOneForUi` (both capped at 4; measured to stop paying off there, and
+  6ce770f's single-thread cap exists only to protect the TUI event loop).
+  Passages embed in batches of 8 — same speed as 32 on CPU, a third of the
+  memory. The embedding cache checkpoints every 256 chunks or 15 s. The
+  prewarm test above therefore initialises ONNX with up to 3 threads.
 
 ### agent/ — a public protocol
 

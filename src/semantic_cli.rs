@@ -7,7 +7,7 @@ use crate::semantic::types::SemanticCancellationToken;
 
 pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool) -> Result<()> {
     use crate::semantic::cache::write_embedding_cache;
-    use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::fastembed::{EmbedThreads, FastembedEmbedder};
     use crate::semantic::index::{SemanticIndexRequest, SemanticIndexState};
     use crate::semantic::output::format_hit;
     use crate::semantic::types::MODEL_NAME;
@@ -52,7 +52,7 @@ pub fn run(query: &str, conversations: &[Conversation], top: usize, local: bool)
         return Ok(());
     }
 
-    let mut embedder = FastembedEmbedder::new()?;
+    let mut embedder = FastembedEmbedder::new(EmbedThreads::AllCores)?;
     let (refresh, response) =
         refresh_and_rank_interactive(&request, &mut state, &mut embedder, write_embedding_cache)?;
 
@@ -91,7 +91,7 @@ pub fn clear_cache() -> Result<()> {
 pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()> {
     use crate::semantic::cache::{MAX_CACHE_ENTRIES, embedding_cache_key, write_embedding_cache};
     use crate::semantic::chunk::build_chunks_with_sources;
-    use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::fastembed::{EmbedThreads, FastembedEmbedder};
     use crate::semantic::index::{SemanticIndexProgress, SemanticIndexRequest, SemanticIndexState};
     use crate::semantic::types::ChunkConfig;
 
@@ -146,7 +146,7 @@ pub fn generate_cache(conversations: &[Conversation], local: bool) -> Result<()>
         selected.len()
     );
 
-    let mut embedder = FastembedEmbedder::new()?;
+    let mut embedder = FastembedEmbedder::new(EmbedThreads::AllCores)?;
     let response = state.refresh_or_prewarm(
         &request,
         &mut embedder,
@@ -184,7 +184,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
     };
     use crate::semantic::chunk::build_chunks;
     use crate::semantic::embed::SemanticEmbedder;
-    use crate::semantic::fastembed::FastembedEmbedder;
+    use crate::semantic::fastembed::{EmbedThreads, FastembedEmbedder};
     use crate::semantic::output::{format_hit, truncate};
     use crate::semantic::rank::rank_chunks;
     use crate::semantic::types::{ChunkConfig, MODEL_NAME, SemanticCancellationToken};
@@ -324,7 +324,7 @@ pub fn debug_search(query: &str, conversations: &[Conversation], local: bool) ->
         return Ok(());
     }
 
-    let mut embedder = FastembedEmbedder::new()?;
+    let mut embedder = FastembedEmbedder::new(EmbedThreads::AllCores)?;
     let Some(query_embedding) = embedder.embed_query(parsed.semantic_text())? else {
         eprintln!("Semantic debug: no query embedding returned.");
         return Ok(());

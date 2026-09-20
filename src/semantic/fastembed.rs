@@ -1,23 +1,60 @@
 use crate::error::{AppError, Result};
 use crate::semantic::embed::SemanticEmbedder;
-use crate::semantic::types::DEFAULT_EMBEDDING_BATCH_SIZE;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use std::path::PathBuf;
 
 #[cfg(feature = "release-dynamic-ort")]
 use std::{path::Path, sync::OnceLock};
 
+/// Passages per forward pass. Small on purpose: on CPU it embeds as fast as
+/// 32 while the attention activations shrink resident memory from ~2.1 GB to
+/// ~0.75 GB.
+const EMBED_BATCH_SIZE: usize = 8;
+/// Intra-op threads stop paying off around here on a small model.
+const MAX_EMBED_THREADS: usize = 4;
+
 pub struct FastembedEmbedder {
     model: TextEmbedding,
 }
 
+/// How many ONNX intra-op threads one embedding call may use. Batch paths
+/// (the CLI, the agent) have nothing else to run; the TUI's worker leaves a
+/// core for the event loop so typing stays responsive while a prewarm runs
+/// (the reason 6ce770f pinned everything to one thread). Thread count only
+/// changes the order of floating-point reductions, so embeddings stay
+/// equivalent and the embedding cache remains valid.
+///
+/// Measured on a 6-core/12-thread laptop: 4 threads were 1.75x faster than
+/// one, 6 slightly slower than 4, and 12 slower still at 2.6x the CPU;
+/// several one-thread sessions run data-parallel matched 4 intra-op threads
+/// at 3x the memory. Hence one session with at most [`MAX_EMBED_THREADS`]
+/// threads; a desktop with more physical cores may scale differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbedThreads {
+    AllCores,
+    LeaveOneForUi,
+}
+
+impl EmbedThreads {
+    /// Logical cores are assumed to be hyperthreaded pairs, which is
+    /// conservative on machines without SMT.
+    pub fn count(self) -> usize {
+        let logical = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let physical = (logical / 2).max(1);
+        match self {
+            Self::AllCores => physical.min(MAX_EMBED_THREADS),
+            Self::LeaveOneForUi => physical.saturating_sub(1).clamp(1, MAX_EMBED_THREADS),
+        }
+    }
+}
+
 impl FastembedEmbedder {
-    pub fn new() -> Result<Self> {
-        Self::new_with_download_progress(crate::semantic::cache::model_cache_dir(), true)
+    pub fn new(threads: EmbedThreads) -> Result<Self> {
+        Self::new_with_download_progress(crate::semantic::cache::model_cache_dir(), true, threads)
     }
 
-    pub fn new_quiet() -> Result<Self> {
-        Self::new_with_download_progress(crate::semantic::cache::model_cache_dir(), false)
+    pub fn new_quiet(threads: EmbedThreads) -> Result<Self> {
+        Self::new_with_download_progress(crate::semantic::cache::model_cache_dir(), false, threads)
     }
 
     pub fn cache_dir() -> PathBuf {
@@ -27,13 +64,14 @@ impl FastembedEmbedder {
     fn new_with_download_progress(
         cache_dir: PathBuf,
         show_download_progress: bool,
+        threads: EmbedThreads,
     ) -> Result<Self> {
         init_onnx_runtime()?;
         let model = TextEmbedding::try_new(
             TextInitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir)
                 .with_show_download_progress(show_download_progress)
-                .with_intra_threads(1),
+                .with_intra_threads(threads.count()),
         )
         .map_err(to_config_error)?;
         Ok(Self { model })
@@ -43,20 +81,14 @@ impl FastembedEmbedder {
 impl SemanticEmbedder for FastembedEmbedder {
     fn embed_passages(&mut self, passages: &[String]) -> Result<Vec<Vec<f32>>> {
         self.model
-            .embed(
-                prefixed_passages(passages),
-                Some(DEFAULT_EMBEDDING_BATCH_SIZE),
-            )
+            .embed(prefixed_passages(passages), Some(EMBED_BATCH_SIZE))
             .map_err(to_config_error)
     }
 
     fn embed_query(&mut self, query: &str) -> Result<Option<Vec<f32>>> {
         let embeddings = self
             .model
-            .embed(
-                vec![prefixed_query(query)],
-                Some(DEFAULT_EMBEDDING_BATCH_SIZE),
-            )
+            .embed(vec![prefixed_query(query)], Some(EMBED_BATCH_SIZE))
             .map_err(to_config_error)?;
         Ok(embeddings.first().cloned())
     }

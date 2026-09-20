@@ -3,7 +3,7 @@ use crate::history::Conversation;
 use crate::search::literal::exact_fallback;
 use crate::search::query::ParsedQuery;
 use crate::semantic::cache::write_embedding_cache;
-use crate::semantic::fastembed::FastembedEmbedder;
+use crate::semantic::fastembed::{EmbedThreads, FastembedEmbedder};
 use crate::semantic::index::{
     SemanticIndexCandidate, SemanticIndexProgress, SemanticIndexRequest, SemanticIndexResponse,
     SemanticIndexState,
@@ -161,7 +161,7 @@ fn run_semantic_worker(
                         generation: request.generation,
                         progress: SemanticProgress::InitializingModel,
                     });
-                    embedder = match FastembedEmbedder::new_quiet() {
+                    embedder = match FastembedEmbedder::new_quiet(EmbedThreads::LeaveOneForUi) {
                         Ok(embedder) => Some(embedder),
                         Err(error) => {
                             let _ = res_tx.send(SemanticSearchMessage::Complete(

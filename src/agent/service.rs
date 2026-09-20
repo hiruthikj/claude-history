@@ -1046,9 +1046,13 @@ fn run_agent_semantic_hits_for_candidates(
         include_chunk_hits: true,
     };
     let mut state = semantic::index::SemanticIndexState::new();
-    let mut embedder = semantic::fastembed::FastembedEmbedder::new().map_err(|error| {
-        AgentError::semantic_unavailable(format!("failed to initialize semantic search: {error}"))
-    })?;
+    let mut embedder =
+        semantic::fastembed::FastembedEmbedder::new(semantic::fastembed::EmbedThreads::AllCores)
+            .map_err(|error| {
+                AgentError::semantic_unavailable(format!(
+                    "failed to initialize semantic search: {error}"
+                ))
+            })?;
     let cancellation = semantic::types::SemanticCancellationToken::new();
     let response = state
         .refresh_or_prewarm_with_budget(

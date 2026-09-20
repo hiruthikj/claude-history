@@ -31,7 +31,11 @@ pub fn embed_chunks_with_budget_and_save(
     mut progress: impl FnMut(usize, usize),
     mut save: impl FnMut(&EmbeddingCache),
 ) -> Result<Vec<EmbeddedChunk>> {
+    // Checkpoint by count and by time: on one core the embedder manages a few
+    // chunks per second, so 256 chunks alone would leave minutes of work
+    // unsaved if the run is interrupted.
     const SAVE_INTERVAL: usize = 256;
+    const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
     if cancellation.is_cancelled() {
         return Err(AppError::SemanticSearchCancelled);
@@ -63,6 +67,7 @@ pub fn embed_chunks_with_budget_and_save(
     misses.truncate(total_misses);
     let mut completed = 0;
     let mut last_saved = 0;
+    let mut last_save_time = std::time::Instant::now();
     for batch in misses.chunks(DEFAULT_EMBEDDING_BATCH_SIZE) {
         if cancellation.is_cancelled() {
             save_pending_cache(cache, completed, &mut last_saved, &mut save);
@@ -99,10 +104,14 @@ pub fn embed_chunks_with_budget_and_save(
             }
         }
         completed += batch.len();
-        if completed == total_misses || completed - last_saved >= SAVE_INTERVAL {
+        if completed == total_misses
+            || completed - last_saved >= SAVE_INTERVAL
+            || last_save_time.elapsed() >= SAVE_EVERY
+        {
             prune_cache(cache);
             save(cache);
             last_saved = completed;
+            last_save_time = std::time::Instant::now();
         }
         progress(completed, total_misses);
     }
