@@ -19,6 +19,7 @@ impl App {
 
     pub(super) fn apply_filtered(&mut self, filtered: Vec<usize>) {
         self.filtered = filtered;
+        self.list_scroll = 0;
         self.selected = if self.filtered.is_empty() {
             None
         } else {
@@ -54,22 +55,35 @@ impl App {
         }
     }
 
+    /// Rows one PageUp/PageDown moves: the rows that fit in the last prepared
+    /// frame, or a fixed stride before any frame has been prepared.
+    fn page_rows(&self) -> usize {
+        const FALLBACK_PAGE_ROWS: usize = 10;
+        if self.list_rows_per_page == 0 {
+            FALLBACK_PAGE_ROWS
+        } else {
+            self.list_rows_per_page
+        }
+    }
+
     pub(super) fn select_page_up(&mut self) {
+        let rows = self.page_rows();
         if let Some(selected) = self.selected {
-            self.selected = Some(selected.saturating_sub(10));
+            self.selected = Some(selected.saturating_sub(rows));
         }
     }
 
     pub(super) fn select_page_down(&mut self) {
+        let rows = self.page_rows();
         if let Some(selected) = self.selected {
-            let new_selected = (selected + 10).min(self.filtered.len().saturating_sub(1));
+            let new_selected = (selected + rows).min(self.filtered.len().saturating_sub(1));
             self.selected = Some(new_selected);
         }
     }
 
-    pub(super) fn select_half_page_down(&mut self, viewport_height: usize) {
+    pub(super) fn select_half_page_down(&mut self) {
+        let half_page = (self.page_rows() / 2).max(1);
         if let Some(selected) = self.selected {
-            let half_page = viewport_height / 2;
             let new_selected = (selected + half_page).min(self.filtered.len().saturating_sub(1));
             self.selected = Some(new_selected);
         }

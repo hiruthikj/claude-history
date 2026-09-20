@@ -4,6 +4,7 @@ use crate::tui::app::{
     App, AppMode, DialogMode, ListSearchMode, LoadingState, SemanticResultMetadata, ViewSearchMode,
     ViewState, list_lines_per_item,
 };
+use crate::tui::list_layout::{self, ListLayout};
 use crate::tui::snippet::{
     context_snippet, fit_around_matches, highlight, sanitize_preview, simple_truncate,
 };
@@ -120,42 +121,26 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(rgb(th().border)));
-    let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
-    // Graceful degradation for tiny terminals - skip bottom bar if too small
-    if inner_area.height < 4 {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(1)])
-            .split(inner_area);
-        render_search_bar(frame, app, chunks[0]);
-        render_list(frame, app, chunks[1]);
-        return;
-    }
+    let layout = ListLayout::new(
+        area,
+        list_lines_per_item(app.list_search_mode(), app.query()),
+    );
+    render_search_bar(frame, app, layout.search_bar);
+    render_list(frame, app, layout.list);
 
-    // Always reserve space for bottom bar (status, dialog, or hotkeys)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner_area);
-
-    render_search_bar(frame, app, chunks[0]);
-    render_list(frame, app, chunks[1]);
-
-    // Render bottom bar: confirm dialog > status message > hotkeys
-    if *app.dialog_mode() == DialogMode::ConfirmDelete {
-        render_confirm_dialog(frame, chunks[2]);
-    } else if let Some((msg, instant)) = app.status_message()
-        && instant.elapsed() < STATUS_TTL
-    {
-        render_status_message(frame, msg, chunks[2]);
-    } else {
-        render_list_status_bar(frame, app, chunks[2]);
+    // Bottom bar (absent on tiny terminals): confirm dialog > status message > hotkeys
+    if let Some(bottom) = layout.status_bar {
+        if *app.dialog_mode() == DialogMode::ConfirmDelete {
+            render_confirm_dialog(frame, bottom);
+        } else if let Some((msg, instant)) = app.status_message()
+            && instant.elapsed() < STATUS_TTL
+        {
+            render_status_message(frame, msg, bottom);
+        } else {
+            render_list_status_bar(frame, app, bottom);
+        }
     }
 
     match app.dialog_mode() {
@@ -1449,12 +1434,14 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
     let semantic_mode = app.list_search_mode() == ListSearchMode::Semantic;
     let lines_per_item = list_lines_per_item(app.list_search_mode(), app.query());
-    let items_per_page = (area.height as usize) / lines_per_item;
-    let offset = match (app.selected(), items_per_page) {
-        (Some(sel), n) if n > 0 => (sel / n) * n,
-        _ => 0,
-    };
-    let visible_count = items_per_page.max(1);
+    let rows_per_page = list_layout::rows_per_page(area.height, lines_per_item);
+    let offset = list_layout::scroll_offset(
+        app.list_scroll(),
+        app.selected(),
+        rows_per_page,
+        app.filtered().len(),
+    );
+    let visible_count = rows_per_page.max(1);
 
     // Cache separator string (same for all items in this frame)
     let separator_str = "─".repeat(width);

@@ -435,7 +435,7 @@ impl App {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-        viewport_height: usize,
+        _viewport_height: usize,
     ) -> Option<Action> {
         if self.is_loading() {
             return self.handle_common_list_key(code, modifiers, false);
@@ -471,7 +471,7 @@ impl App {
                 None
             }
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.select_half_page_down(viewport_height);
+                self.select_half_page_down();
                 None
             }
             KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {

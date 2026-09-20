@@ -1,4 +1,5 @@
-use super::app::{Action, App, AppMode, DialogMode, TuiSearchOptions};
+use super::app::{Action, App, AppMode, DialogMode, TuiSearchOptions, list_lines_per_item};
+use super::list_layout::ListLayout;
 use super::ui;
 use crate::config::KeyBindings;
 use crate::debug_log;
@@ -90,7 +91,14 @@ fn prepare_frame(app: &mut App, terminal: &mut Terminal<CrosstermBackend<Stderr>
         AppMode::View(state) => {
             ui::view_layout_rects(frame_area, app, state).content.height as usize
         }
-        AppMode::List => viewport_height,
+        AppMode::List => {
+            let layout = ListLayout::new(
+                frame_area,
+                list_lines_per_item(app.list_search_mode(), app.query()),
+            );
+            app.commit_list_layout(&layout);
+            viewport_height
+        }
     };
 
     FrameState {
@@ -224,9 +232,10 @@ pub fn run_with_loader(
             }
         }
 
-        let frame_state = prepare_frame(&mut app, &mut guard.terminal);
+        let mut frame_state = prepare_frame(&mut app, &mut guard.terminal);
         draw_frame(&app, &mut guard.terminal)?;
         if app.receive_search_results() {
+            frame_state = prepare_frame(&mut app, &mut guard.terminal);
             draw_frame(&app, &mut guard.terminal)?;
         }
 

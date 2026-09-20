@@ -3,6 +3,7 @@ use crate::history::{Conversation, format_short_name_from_path, process_conversa
 use crate::search::{self, SearchableConversation};
 #[cfg(test)]
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
+use crate::tui::list_layout::ListLayout;
 #[cfg(test)]
 use crate::tui::semantic_worker::{SemanticSearchMessage, SemanticWorkerCommand};
 #[cfg(test)]
@@ -57,6 +58,12 @@ pub struct App {
     filtered: Vec<usize>,
     /// Currently selected index into filtered (None if no results)
     selected: Option<usize>,
+    /// First visible list row as of the last prepared frame; the renderer and
+    /// the click handler both derive the actual window from it through
+    /// `list_layout::scroll_offset`
+    list_scroll: usize,
+    /// Whole rows the list area held in the last prepared frame (paging unit)
+    list_rows_per_page: usize,
     /// Current search query
     query: String,
     /// Cursor position in query (character index, not byte)
@@ -136,6 +143,8 @@ impl App {
             searchable: parts.searchable,
             filtered: parts.filtered,
             selected: parts.selected,
+            list_scroll: 0,
+            list_rows_per_page: 0,
             query: String::new(),
             cursor_pos: 0,
             loading_state: parts.loading_state,
@@ -495,6 +504,19 @@ impl App {
                 .matches(KeyCode::Char('t'), KeyModifiers::CONTROL)
     }
 
+    /// Settle the list window for the frame about to be drawn: keep the
+    /// selection visible and remember how many rows fit, so paging keys and
+    /// clicks use the same geometry the renderer does.
+    pub fn commit_list_layout(&mut self, layout: &ListLayout) {
+        self.list_rows_per_page = layout.rows_per_page();
+        self.list_scroll =
+            layout.scroll_offset(self.list_scroll, self.selected, self.filtered.len());
+    }
+
+    pub fn list_scroll(&self) -> usize {
+        self.list_scroll
+    }
+
     /// Handle a left-click in list mode: select the conversation under the cursor.
     /// Returns true if the click landed on a list item — the caller is expected to
     /// then transition into view mode (matching the Enter-key behavior).
@@ -506,39 +528,17 @@ impl App {
             return false;
         }
 
-        // Mirror the layout in render_list_mode: outer 1px border, then split
-        // [search bar (2), list (Min 1), bottom bar (1)] — or omit the bottom
-        // bar when the inner area is < 4 lines tall.
-        let inner_height = frame_area.height.saturating_sub(2);
-        let list_y = frame_area.y.saturating_add(1).saturating_add(2);
-        let list_height = if inner_height < 4 {
-            inner_height.saturating_sub(2)
-        } else {
-            inner_height.saturating_sub(3)
-        };
-
-        if list_height == 0 || row < list_y || row >= list_y.saturating_add(list_height) {
-            return false;
-        }
-
-        let lines_per_item = list_lines_per_item(self.list_search_mode, &self.query);
-        let items_per_page = (list_height as usize) / lines_per_item;
-        if items_per_page == 0 {
-            return false;
-        }
-
-        let offset = match self.selected {
-            Some(sel) => (sel / items_per_page) * items_per_page,
-            None => 0,
-        };
-        let relative_row = (row - list_y) as usize;
-        let relative_idx = relative_row / lines_per_item;
-        let new_idx = offset + relative_idx;
-        if new_idx < self.filtered.len() {
-            self.selected = Some(new_idx);
-            true
-        } else {
-            false
+        let layout = ListLayout::new(
+            frame_area,
+            list_lines_per_item(self.list_search_mode, &self.query),
+        );
+        let offset = layout.scroll_offset(self.list_scroll, self.selected, self.filtered.len());
+        match layout.row_at(offset, row, self.filtered.len()) {
+            Some(index) => {
+                self.selected = Some(index);
+                true
+            }
+            None => false,
         }
     }
 }
