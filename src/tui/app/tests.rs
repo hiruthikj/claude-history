@@ -325,7 +325,6 @@ fn stale_response_with_current_generation_but_old_mode_is_ignored() {
         filtered: vec![0],
         generation: 7,
         mode: ListSearchMode::Lexical,
-        evidence: HashMap::new(),
     })
     .unwrap();
 
@@ -823,7 +822,6 @@ fn semantic_search_applies_lexical_fallback_while_pending() {
         filtered: vec![0],
         generation: 7,
         mode: ListSearchMode::Semantic,
-        evidence: HashMap::new(),
     })
     .unwrap();
 
@@ -852,7 +850,6 @@ fn empty_lexical_fallback_keeps_results_visible_while_semantic_search_is_pending
         filtered: Vec::new(),
         generation: 7,
         mode: ListSearchMode::Semantic,
-        evidence: HashMap::new(),
     })
     .unwrap();
 
@@ -880,7 +877,6 @@ fn semantic_search_ignores_lexical_fallback_after_completion() {
         filtered: Vec::new(),
         generation: 7,
         mode: ListSearchMode::Semantic,
-        evidence: HashMap::new(),
     })
     .unwrap();
 
@@ -1561,7 +1557,6 @@ fn uuid_dispatch_invalidates_stale_search_response() {
         filtered: vec![1],
         generation: 1,
         mode: ListSearchMode::Lexical,
-        evidence: HashMap::new(),
     })
     .unwrap();
 
@@ -1599,7 +1594,6 @@ fn finish_loading_invalidates_stale_loading_search_response() {
         filtered: vec![],
         generation: 1,
         mode: ListSearchMode::Lexical,
-        evidence: HashMap::new(),
     })
     .unwrap();
 

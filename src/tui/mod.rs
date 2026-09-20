@@ -1,6 +1,7 @@
 mod app;
 mod export;
 mod list_layout;
+mod list_rows;
 mod runtime;
 mod semantic_worker;
 mod snippet;

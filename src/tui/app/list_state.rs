@@ -20,6 +20,7 @@ impl App {
     pub(super) fn apply_filtered(&mut self, filtered: Vec<usize>) {
         self.filtered = filtered;
         self.list_scroll = 0;
+        self.bump_results_version();
         self.selected = if self.filtered.is_empty() {
             None
         } else {
@@ -112,15 +113,6 @@ impl App {
     pub(crate) fn get_selected_source(&self) -> Option<crate::history::Source> {
         self.get_selected_conversation_index()
             .map(|index| self.conversations[index].source)
-    }
-
-    pub(crate) fn has_multiple_sources(&self) -> bool {
-        let sources = self
-            .conversations
-            .iter()
-            .map(|conversation| conversation.source)
-            .collect::<HashSet<_>>();
-        sources.len() > 1
     }
 
     pub(super) fn get_selected_conversation_index(&self) -> Option<usize> {

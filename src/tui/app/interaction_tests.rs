@@ -2,6 +2,7 @@ use super::semantic_test_helpers::*;
 use super::*;
 use crate::config::KeyBinding;
 use chrono::TimeZone;
+use std::collections::HashMap;
 
 fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversation {
     let mut full_text = "hello body".to_string();

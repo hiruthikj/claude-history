@@ -97,6 +97,7 @@ fn prepare_frame(app: &mut App, terminal: &mut Terminal<CrosstermBackend<Stderr>
                 list_lines_per_item(app.list_search_mode(), app.query()),
             );
             app.commit_list_layout(&layout);
+            app.prepare_list_rows(&layout);
             viewport_height
         }
     };

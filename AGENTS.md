@@ -151,8 +151,8 @@ after the terminal guard is dropped.
   with punctuation does not require a word start.
 - `search/matcher.rs::QueryMatcher` is the one place that locates a
   `ParsedQuery` in text: highlight ranges, "is this literal visible in the
-  preview", and the hidden-context evidence (`LexicalEvidence`) the lexical
-  worker precomputes per hit. `ParsedQuery::words`/`identifier_literals` own
+  preview", and `hidden_context` (ranges in `full_text` worth showing when
+  the preview hides a match). `ParsedQuery::words`/`identifier_literals` own
   the `_`-promotion rule. `tui/snippet.rs` only fits text around ranges the
   matcher returns; it never re-derives matches.
 - Mode precedence (`search/mode.rs::resolve_search_mode`): CLI > `[agent].mode`
@@ -192,7 +192,23 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
 
 - `tui/runtime.rs` owns the loop and `TerminalGuard` (raw mode + alternate
   screen on **stderr**). `App` state is split by concern under `tui/app/`;
-  `tui/app/types.rs::Action` is what returns to main.
+  `tui/app/types.rs::Action` is what returns to main. Each iteration is
+  `prepare_frame` → draw → `receive_search_results` → (prepare + draw again
+  if anything arrived); per-frame preparation must happen in `prepare_frame`,
+  never in a renderer, because renderers take `&App`.
+- List mode has one geometry owner, `tui/list_layout.rs`: rects, rows per
+  page, the row under a screen line, and the pure `scroll_offset` (anchored
+  window with scrolloff) that `ui::render_list` and `App::handle_list_click`
+  both evaluate from the same inputs. `App::commit_list_layout` settles the
+  anchor before each draw; paging keys move by the rows the last frame held.
+- What a list row says is `tui/list_rows.rs`: `project_row` fits every part
+  (project, title, summary, right-hand metadata, preview, literal context)
+  into the width as plain strings, and `row_evidence` is the only place that
+  scans a conversation's `full_text` for the list. `tui/app/rows.rs` caches
+  that evidence per (result set, query, width) for the visible rows in
+  `prepare_list_rows`, keeping the previous set while a lexical search is in
+  flight; `ui::render_list` only styles. Rows without semantic metadata show
+  lexical hidden-context in both modes.
 - Streaming load: batches arrive over a channel and are appended, but search
   text is only precomputed and search re-dispatched at `finish_loading`.
 - Lexical and semantic workers are threads with generation counters. Any

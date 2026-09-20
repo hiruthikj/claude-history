@@ -12,4 +12,4 @@ pub use lexical::{
     debug_agent_search, debug_search, is_uuid, precompute_agent_search_text,
     precompute_search_text, search,
 };
-pub use matcher::{LexicalEvidence, QueryMatcher, build_lexical_evidence};
+pub use matcher::QueryMatcher;

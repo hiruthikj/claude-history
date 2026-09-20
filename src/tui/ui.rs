@@ -1,19 +1,23 @@
 use crate::config::KeyBindings;
 use crate::search::QueryMatcher;
 use crate::tui::app::{
-    App, AppMode, DialogMode, ListSearchMode, LoadingState, SemanticResultMetadata, ViewSearchMode,
-    ViewState, list_lines_per_item,
+    App, AppMode, DialogMode, ListSearchMode, LoadingState, ViewSearchMode, ViewState,
+    list_lines_per_item,
 };
 use crate::tui::list_layout::{self, ListLayout};
-use crate::tui::snippet::{
-    context_snippet, fit_around_matches, highlight, sanitize_preview, simple_truncate,
+use crate::tui::list_rows::{
+    INDICATOR, ListRow, Recency, RowSource, project_row, row_evidence, semantic_rationale_label,
 };
+#[cfg(test)]
+use crate::tui::snippet::fit_around_matches;
+use crate::tui::snippet::{highlight, sanitize_preview, simple_truncate};
 use crate::tui::theme::{self, Theme};
 use crate::tui::viewer::{LineStyle, RenderedLine};
-use chrono::{DateTime, Local};
+use chrono::Local;
 use ratatui::layout::Position;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
+use std::borrow::Cow;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Get the current theme
@@ -251,18 +255,6 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status_line = Line::from(spans);
     let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
     frame.render_widget(status, area);
-}
-
-fn semantic_rationale_label(metadata: &SemanticResultMetadata) -> &'static str {
-    match metadata.explanation.rationale_kind {
-        crate::semantic::types::SemanticRationaleKind::SemanticOnly => "semantic",
-        crate::semantic::types::SemanticRationaleKind::LexicalBoosted => "lex boost",
-        crate::semantic::types::SemanticRationaleKind::WeakMatch => "weak",
-    }
-}
-
-fn semantic_row_metadata(metadata: &SemanticResultMetadata) -> String {
-    format!("{:.2}", metadata.score_breakdown.hybrid)
 }
 
 fn render_semantic_debug_popup(frame: &mut Frame, app: &App) {
@@ -1449,7 +1441,6 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // Compute now once for consistent relative timestamps across all visible items
     let now = Local::now();
 
-    // Only build ListItems for the visible range
     let visible_items: Vec<ListItem> = app
         .filtered()
         .iter()
@@ -1458,313 +1449,23 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(relative_idx, &conv_idx)| {
             let list_idx = offset + relative_idx;
-            let conv = &app.conversations()[conv_idx];
             let is_selected = app.selected() == Some(list_idx);
-
-            // Format timestamp (hybrid: relative for recent, absolute for older)
-            let (timestamp, recency) = format_timestamp(conv.timestamp, now);
-
-            // Format message count
-            let msg_count = if conv.message_count == 1 {
-                "1 msg".to_string()
-            } else {
-                format!("{} msgs", conv.message_count)
+            let source = RowSource {
+                conversation: &app.conversations()[conv_idx],
+                matcher: &matcher,
+                semantic_mode,
+                semantic: app.semantic_result_metadata(conv_idx),
+                width,
+                multiple_sources: app.has_multiple_sources(),
             };
-
-            // Format conversation duration (only if > 0 minutes)
-            let duration = conv.duration_minutes.map(|m| {
-                if m >= 60 {
-                    format!("{}h {}m", m / 60, m % 60)
-                } else {
-                    format!("{}m", m)
-                }
-            });
-
-            // Selection indicator: vertical bar for all rows (with left padding)
-            let indicator = " ▌ ";
-            let indicator_style = if is_selected {
-                Style::default().fg(rgb(th().accent))
-            } else {
-                Style::default().fg(rgb(th().border))
+            // The frame loop prepares evidence for every visible row; direct
+            // callers (tests) get it computed inline.
+            let evidence = match app.row_evidence(conv_idx) {
+                Some(evidence) => Cow::Borrowed(evidence),
+                None => Cow::Owned(row_evidence(&source)),
             };
-
-            let semantic_metadata = app.semantic_result_metadata(conv_idx);
-            let semantic_meta_part = (semantic_mode && width >= 70)
-                .then(|| semantic_metadata.map(semantic_row_metadata))
-                .flatten();
-            let semantic_meta_len = semantic_meta_part
-                .as_ref()
-                .map(|s| UnicodeWidthStr::width(s.as_str()) + 3)
-                .unwrap_or(0);
-
-            let duration_len = duration
-                .as_ref()
-                .map(|d| UnicodeWidthStr::width(d.as_str()) + 3)
-                .unwrap_or(0);
-            let right_len = UnicodeWidthStr::width(msg_count.as_str())
-                + duration_len
-                + semantic_meta_len
-                + 3
-                + UnicodeWidthStr::width(timestamp.as_str());
-            let indicator_len = UnicodeWidthStr::width(indicator);
-            let min_padding = 3;
-            let left_budget = width.saturating_sub(indicator_len + right_len + min_padding);
-
-            // Build left part: indicator + project + optional custom title + optional summary
-            let raw_project_part = conv
-                .project_name
-                .as_ref()
-                .map(|name| {
-                    if app.has_multiple_sources() {
-                        format!("{:<3} · {name}", conv.source.list_label())
-                    } else {
-                        name.to_string()
-                    }
-                })
-                .unwrap_or_default();
-            let has_title_or_summary = conv.custom_title.as_ref().is_some_and(|s| !s.is_empty())
-                || conv.summary.as_ref().is_some_and(|s| !s.is_empty());
-            let raw_project_width = UnicodeWidthStr::width(raw_project_part.as_str());
-            let reserved_left_detail = if width < 90 && has_title_or_summary {
-                (left_budget / 3).clamp(10, 24)
-            } else {
-                0
-            };
-            let project_budget =
-                raw_project_width.min(left_budget.saturating_sub(reserved_left_detail));
-            let project_part = simple_truncate(&raw_project_part, project_budget);
-            let project_len = UnicodeWidthStr::width(project_part.as_str());
-
-            let title_budget = left_budget.saturating_sub(project_len + 3);
-            let custom_title_part = conv
-                .custom_title
-                .as_ref()
-                .filter(|s| !s.is_empty() && title_budget > 4)
-                .map(|s| format!(" · {}", simple_truncate(s, title_budget)));
-            let custom_title_len = custom_title_part
-                .as_ref()
-                .map(|s| UnicodeWidthStr::width(s.as_str()))
-                .unwrap_or(0);
-
-            let available_for_summary = width.saturating_sub(
-                indicator_len + project_len + custom_title_len + right_len + min_padding + 4,
-            );
-
-            // Build summary part (dimmer, dynamically truncated based on available space)
-            let summary_part = conv
-                .summary
-                .as_ref()
-                .filter(|s| !s.is_empty() && available_for_summary > 5)
-                .map(|s| {
-                    if UnicodeWidthStr::width(s.as_str()) > available_for_summary {
-                        format!(" · {}", simple_truncate(s, available_for_summary))
-                    } else {
-                        format!(" · {}", s)
-                    }
-                });
-
-            // Calculate padding for right-aligned timestamp + message count
-            let left_len = indicator_len
-                + project_len
-                + custom_title_len
-                + summary_part
-                    .as_ref()
-                    .map(|s| UnicodeWidthStr::width(s.as_str()))
-                    .unwrap_or(0);
-            let padding = width.saturating_sub(left_len + right_len + 1);
-
-            // Header line: ▌ project-name · summary                    timestamp
-            let project_style = if is_selected {
-                Style::default().fg(rgb(th().text_primary)).bold()
-            } else {
-                Style::default().fg(rgb(th().text_primary))
-            };
-
-            let summary_style = Style::default().fg(rgb(th().summary)); // Soft slate blue
-            let summary_highlight_style = Style::default().fg(rgb(th().summary_highlight)); // Lighter slate blue for highlights
-
-            // Highlight style: cyan with bold for selected row
-            let highlight_style = if is_selected {
-                Style::default().fg(rgb(th().accent)).bold()
-            } else {
-                Style::default().fg(rgb(th().accent))
-            };
-
-            let selection_bg = if is_selected {
-                Style::default().bg(rgb(th().selection_bg))
-            } else {
-                Style::default()
-            };
-
-            let custom_title_style = Style::default().fg(rgb(th().custom_title)); // Warm gold
-            let custom_title_highlight_style =
-                Style::default().fg(rgb(th().custom_title_highlight)); // Lighter gold for highlights
-
-            // Build header with highlighted project name
-            let mut header_spans = vec![Span::styled(indicator, indicator_style)];
-            header_spans.extend(highlight(
-                &matcher,
-                &project_part,
-                project_style,
-                highlight_style,
-            ));
-
-            // Add custom title if present (with search highlighting)
-            if let Some(ref title) = custom_title_part {
-                header_spans.extend(highlight(
-                    &matcher,
-                    title,
-                    custom_title_style,
-                    custom_title_highlight_style,
-                ));
-            }
-
-            // Add summary if present (with search highlighting)
-            if let Some(ref summary) = summary_part {
-                header_spans.extend(highlight(
-                    &matcher,
-                    summary,
-                    summary_style,
-                    summary_highlight_style,
-                ));
-            }
-
-            header_spans.push(Span::raw(" ".repeat(padding)));
-            header_spans.push(Span::styled(
-                msg_count,
-                Style::default().fg(rgb(th().msg_count)),
-            ));
-            if let Some(ref metadata_text) = semantic_meta_part {
-                header_spans.push(Span::styled(
-                    " · ",
-                    Style::default().fg(rgb(th().dot_separator)),
-                ));
-                header_spans.push(Span::styled(
-                    metadata_text.clone(),
-                    Style::default().fg(rgb(th().accent)),
-                ));
-            }
-            // Add conversation duration if present
-            if let Some(ref d) = duration {
-                header_spans.push(Span::styled(
-                    " · ",
-                    Style::default().fg(rgb(th().dot_separator)),
-                ));
-                header_spans.push(Span::styled(
-                    d.clone(),
-                    Style::default().fg(rgb(th().duration_color)),
-                ));
-            }
-            header_spans.push(Span::styled(
-                " · ",
-                Style::default().fg(rgb(th().dot_separator)),
-            ));
-            let timestamp_color = match recency {
-                Recency::Now => th().timestamp_now,
-                Recency::Minutes => th().timestamp_minutes,
-                Recency::Hours => th().timestamp_hours,
-                Recency::Days => th().timestamp_days,
-                Recency::Old => th().text_secondary,
-            };
-            header_spans.push(Span::styled(
-                timestamp,
-                Style::default().fg(rgb(timestamp_color)),
-            ));
-
-            let header = Line::from(header_spans).style(selection_bg);
-
-            let max_preview_len = width.saturating_sub(4);
-            let lexical_evidence = (!semantic_mode || semantic_metadata.is_none())
-                .then(|| app.lexical_evidence(conv_idx))
-                .flatten();
-            let lexical_context = lexical_evidence.and_then(|evidence| {
-                context_snippet(&conv.full_text, &evidence.context_ranges, max_preview_len)
-            });
-            let semantic_preview = semantic_metadata
-                .filter(|_| semantic_mode && !matcher.is_empty())
-                .map(|metadata| sanitize_preview(&metadata.explanation.evidence_preview));
-            let preview_text = if let Some(preview) = semantic_preview {
-                preview
-            } else if let Some(context) = lexical_context.as_ref() {
-                context.clone()
-            } else {
-                sanitize_preview(&conv.preview)
-            };
-            let truncated_preview = if matcher.is_empty() {
-                simple_truncate(&preview_text, max_preview_len)
-            } else if semantic_mode && matcher.matches(&preview_text) {
-                fit_around_matches(
-                    &preview_text,
-                    &matcher.ranges(&preview_text),
-                    max_preview_len,
-                )
-            } else if semantic_mode || lexical_context.is_some() {
-                simple_truncate(&preview_text, max_preview_len)
-            } else {
-                fit_around_matches(
-                    &preview_text,
-                    &matcher.ranges(&preview_text),
-                    max_preview_len,
-                )
-            };
-
-            // Build preview with highlighted matches
-            let preview_style = Style::default().fg(rgb(th().preview));
-            let mut preview_spans = vec![Span::styled(indicator, indicator_style)];
-            preview_spans.extend(highlight(
-                &matcher,
-                &truncated_preview,
-                preview_style,
-                highlight_style,
-            ));
-
-            let preview = Line::from(preview_spans).style(selection_bg);
-
-            let allow_literal_context = lexical_context.is_none();
-            // Check for hidden literal matches and build context line if needed
-            let context_line =
-                if allow_literal_context && matcher.literals_missing_from(&truncated_preview) {
-                    let context_width = width.saturating_sub(4);
-                    matcher
-                        .literals_only()
-                        .hidden_context(&conv.full_text, &truncated_preview)
-                        .and_then(|ranges| context_snippet(&conv.full_text, &ranges, context_width))
-                        .map(|context_text| {
-                            let context_base_style = Style::default().fg(rgb(th().context_base));
-                            let context_highlight_style =
-                                Style::default().fg(rgb(th().context_highlight));
-
-                            let mut context_spans = vec![Span::styled(indicator, indicator_style)];
-                            context_spans.extend(highlight(
-                                &matcher,
-                                &context_text,
-                                context_base_style,
-                                context_highlight_style,
-                            ));
-
-                            Line::from(context_spans).style(selection_bg)
-                        })
-                } else {
-                    None
-                };
-
-            // Separator line: dim horizontal rule (full width)
-            let separator = Line::from(Span::styled(
-                separator_str.as_str(),
-                Style::default().fg(rgb(th().separator)),
-            ));
-
-            // Every row takes `lines_per_item` lines so that click-to-row
-            // math in `App::handle_list_click` matches what is drawn; rows
-            // without a context line get a blank one.
-            let lines = if let Some(ctx) = context_line {
-                vec![header, preview, ctx, separator]
-            } else if lines_per_item == 4 {
-                vec![header, preview, Line::default(), separator]
-            } else {
-                vec![header, preview, separator]
-            };
-
+            let row = project_row(&source, &evidence, now);
+            let lines = row_lines(&row, &matcher, is_selected, &separator_str, lines_per_item);
             ListItem::new(lines)
         })
         .collect();
@@ -1773,62 +1474,132 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-/// Recency level for timestamp color grading
-enum Recency {
-    Now,
-    Minutes,
-    Hours,
-    Days,
-    Old,
-}
+/// Style one projected row into `lines_per_item` lines: header, preview,
+/// optional context (or a blank line to keep row height uniform, so
+/// click-to-row math matches what is drawn), and a separator.
+fn row_lines<'a>(
+    row: &ListRow,
+    matcher: &QueryMatcher,
+    is_selected: bool,
+    separator_str: &'a str,
+    lines_per_item: usize,
+) -> Vec<Line<'a>> {
+    let indicator_style = if is_selected {
+        Style::default().fg(rgb(th().accent))
+    } else {
+        Style::default().fg(rgb(th().border))
+    };
+    let project_style = if is_selected {
+        Style::default().fg(rgb(th().text_primary)).bold()
+    } else {
+        Style::default().fg(rgb(th().text_primary))
+    };
+    let highlight_style = if is_selected {
+        Style::default().fg(rgb(th().accent)).bold()
+    } else {
+        Style::default().fg(rgb(th().accent))
+    };
+    let selection_bg = if is_selected {
+        Style::default().bg(rgb(th().selection_bg))
+    } else {
+        Style::default()
+    };
+    let dot = || Span::styled(" · ", Style::default().fg(rgb(th().dot_separator)));
 
-/// Format a timestamp as relative time for recent entries, absolute for older ones.
-/// Returns (formatted_string, recency) for color grading.
-fn format_timestamp(timestamp: DateTime<Local>, now: DateTime<Local>) -> (String, Recency) {
-    let age = now.signed_duration_since(timestamp);
+    let mut header_spans = vec![Span::styled(INDICATOR, indicator_style)];
+    header_spans.extend(highlight(
+        matcher,
+        &row.project,
+        project_style,
+        highlight_style,
+    ));
+    if let Some(title) = &row.custom_title {
+        header_spans.extend(highlight(
+            matcher,
+            title,
+            Style::default().fg(rgb(th().custom_title)),
+            Style::default().fg(rgb(th().custom_title_highlight)),
+        ));
+    }
+    if let Some(summary) = &row.summary {
+        header_spans.extend(highlight(
+            matcher,
+            summary,
+            Style::default().fg(rgb(th().summary)),
+            Style::default().fg(rgb(th().summary_highlight)),
+        ));
+    }
+    header_spans.push(Span::raw(" ".repeat(row.padding)));
+    header_spans.push(Span::styled(
+        row.msg_count.clone(),
+        Style::default().fg(rgb(th().msg_count)),
+    ));
+    if let Some(meta) = &row.semantic_meta {
+        header_spans.push(dot());
+        header_spans.push(Span::styled(
+            meta.clone(),
+            Style::default().fg(rgb(th().accent)),
+        ));
+    }
+    if let Some(duration) = &row.duration {
+        header_spans.push(dot());
+        header_spans.push(Span::styled(
+            duration.clone(),
+            Style::default().fg(rgb(th().duration_color)),
+        ));
+    }
+    header_spans.push(dot());
+    let timestamp_color = match row.recency {
+        Recency::Now => th().timestamp_now,
+        Recency::Minutes => th().timestamp_minutes,
+        Recency::Hours => th().timestamp_hours,
+        Recency::Days => th().timestamp_days,
+        Recency::Old => th().text_secondary,
+    };
+    header_spans.push(Span::styled(
+        row.timestamp.clone(),
+        Style::default().fg(rgb(timestamp_color)),
+    ));
+    let header = Line::from(header_spans).style(selection_bg);
 
-    // Future timestamps (clock skew): show absolute
-    if age.num_seconds() < 0 {
-        return (timestamp.format("%b %d, %H:%M").to_string(), Recency::Old);
-    }
+    let mut preview_spans = vec![Span::styled(INDICATOR, indicator_style)];
+    preview_spans.extend(highlight(
+        matcher,
+        &row.preview,
+        Style::default().fg(rgb(th().preview)),
+        highlight_style,
+    ));
+    let preview = Line::from(preview_spans).style(selection_bg);
 
-    let seconds = age.num_seconds();
-    let minutes = age.num_minutes();
-    let hours = age.num_hours();
+    let context = row.context.as_ref().map(|context_text| {
+        let mut context_spans = vec![Span::styled(INDICATOR, indicator_style)];
+        context_spans.extend(highlight(
+            matcher,
+            context_text,
+            Style::default().fg(rgb(th().context_base)),
+            Style::default().fg(rgb(th().context_highlight)),
+        ));
+        Line::from(context_spans).style(selection_bg)
+    });
 
-    if seconds < 60 {
-        return ("just now".to_string(), Recency::Now);
-    }
-    if minutes < 60 {
-        return (format!("{minutes} min ago"), Recency::Minutes);
-    }
-    if hours < 24 {
-        return (
-            format!("{hours} hour{} ago", if hours == 1 { "" } else { "s" }),
-            Recency::Hours,
-        );
-    }
+    let separator = Line::from(Span::styled(
+        separator_str,
+        Style::default().fg(rgb(th().separator)),
+    ));
 
-    // Use calendar day difference for "yesterday" accuracy
-    let day_diff = now
-        .date_naive()
-        .signed_duration_since(timestamp.date_naive())
-        .num_days();
-    if day_diff == 1 {
-        return ("yesterday".to_string(), Recency::Days);
+    if let Some(ctx) = context {
+        vec![header, preview, ctx, separator]
+    } else if lines_per_item == 4 {
+        vec![header, preview, Line::default(), separator]
+    } else {
+        vec![header, preview, separator]
     }
-    if day_diff < 7 {
-        return (format!("{day_diff} days ago"), Recency::Days);
-    }
-
-    (timestamp.format("%b %d, %H:%M").to_string(), Recency::Old)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::history::Conversation;
-    use crate::search::query::ParsedQuery;
     use crate::semantic::types::{
         SemanticChunkIdentity, SemanticExplanation, SemanticQuality, SemanticRationaleKind,
         SemanticScoreBreakdown,
@@ -2215,7 +1986,9 @@ mod tests {
     }
 
     #[test]
-    fn semantic_list_uses_conversation_preview_while_query_has_no_metadata() {
+    fn semantic_list_shows_lexical_context_while_query_has_no_metadata() {
+        // Until the semantic worker answers, rows fall back to the lexical
+        // ranking and show its hidden-context snippet like lexical mode does.
         let mut app = semantic_app();
         app.set_query_for_test("sentinel");
         let backend = TestBackend::new(80, 8);
@@ -2226,10 +1999,7 @@ mod tests {
             .unwrap();
 
         let contents = terminal_contents(&terminal);
-        assert!(
-            contents.contains("lexical preview sentinel"),
-            "{contents:?}"
-        );
+        assert!(contents.contains("tool output sentinel"), "{contents:?}");
     }
 
     #[test]
@@ -2516,16 +2286,11 @@ mod tests {
     }
 
     #[test]
-    fn lexical_unquoted_render_shows_cached_hidden_full_text_context() {
+    fn lexical_unquoted_render_shows_hidden_full_text_context() {
         let mut conversation = test_conversation();
         conversation.preview = "visible lexical preview".to_string();
         conversation.full_text =
             format!("visible lexical preview {} hiddenneedle", "x ".repeat(200));
-        let evidence = crate::search::build_lexical_evidence(
-            &conversation,
-            &ParsedQuery::parse("hiddenneedle"),
-        )
-        .unwrap();
         let mut app = App::new(
             vec![conversation],
             ToolDisplayMode::Truncated,
@@ -2534,7 +2299,6 @@ mod tests {
             vec![],
         );
         app.set_query_for_test("hiddenneedle");
-        app.set_lexical_evidence_for_test(0, evidence);
         let backend = TestBackend::new(80, 8);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -2609,19 +2373,24 @@ mod tests {
     }
 
     #[test]
-    fn lexical_mixed_query_cached_context_uses_unquoted_and_literals() {
+    fn lexical_mixed_query_context_uses_unquoted_and_literals() {
         let mut conversation = test_conversation();
         conversation.preview = "visible preview".to_string();
         conversation.full_text = format!("hidden_unquoted {} exact_literal", "x ".repeat(120));
-        let evidence = crate::search::build_lexical_evidence(
-            &conversation,
-            &ParsedQuery::parse("hidden_unquoted \"exact_literal\""),
-        )
-        .unwrap();
-        let ctx = context_snippet(&conversation.full_text, &evidence.context_ranges, 120).unwrap();
+        let matcher = QueryMatcher::from_query("hidden_unquoted \"exact_literal\"");
+        let source = RowSource {
+            conversation: &conversation,
+            matcher: &matcher,
+            semantic_mode: false,
+            semantic: None,
+            width: 124,
+            multiple_sources: false,
+        };
+        let evidence = row_evidence(&source);
+        let row = project_row(&source, &evidence, Local::now());
 
-        assert!(ctx.contains("exact_literal"), "{ctx:?}");
-        assert!(ctx.contains("hidden_unquoted"), "{ctx:?}");
+        assert!(row.preview.contains("exact_literal"), "{:?}", row.preview);
+        assert!(row.preview.contains("hidden_unquoted"), "{:?}", row.preview);
     }
 
     #[test]
@@ -2639,7 +2408,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_list_shows_literal_context_when_evidence_lacks_literal() {
+    fn semantic_list_shows_hidden_literal_for_rows_without_metadata() {
         let mut conversation = test_conversation();
         conversation.full_text =
             "tool output sentinel includes audio_generation literal".to_string();
@@ -2668,10 +2437,6 @@ mod tests {
             .unwrap();
         app.receive_search_results();
         let contents = render_semantic_list_contents(&mut app, 80, 8);
-        assert!(
-            contents.contains("lexical preview sentinel"),
-            "{contents:?}"
-        );
         assert!(contents.contains("audio_generation"), "{contents:?}");
     }
 

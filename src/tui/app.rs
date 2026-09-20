@@ -15,7 +15,7 @@ use crate::tui::viewer::ToolOutputId;
 use chrono::Local;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -24,6 +24,7 @@ use std::time::Duration;
 mod dialog_state;
 mod input_controller;
 mod list_state;
+mod rows;
 mod search_state;
 mod types;
 mod view_state;
@@ -104,8 +105,13 @@ pub struct App {
     list_search_mode: ListSearchMode,
     /// Semantic TUI state
     semantic_search: SemanticSearchState,
-    /// Cached lexical evidence produced outside the render path
-    lexical_evidence: HashMap<usize, search::LexicalEvidence>,
+    /// Bumped whenever `filtered`, the semantic results or the corpus change;
+    /// keys the row-evidence cache
+    results_version: u64,
+    /// `full_text` scans for the rows on screen (see `app/rows.rs`)
+    row_evidence: rows::RowEvidenceCache,
+    /// Whether the corpus mixes sources; maintained where the corpus changes
+    multiple_sources: bool,
 }
 
 struct AppParts {
@@ -132,6 +138,7 @@ struct AppParts {
 
 impl App {
     fn from_parts(parts: AppParts) -> Self {
+        let multiple_sources = rows::multiple_sources(&parts.conversations);
         Self {
             conversations_snapshot: parts.conversations_snapshot,
             semantic_conversations_snapshot: parts.semantic_conversations_snapshot,
@@ -165,7 +172,9 @@ impl App {
             search_in_flight: false,
             list_search_mode: parts.list_search_mode,
             semantic_search: parts.semantic_search,
-            lexical_evidence: HashMap::new(),
+            results_version: 0,
+            row_evidence: rows::RowEvidenceCache::default(),
+            multiple_sources,
         }
     }
 
@@ -369,6 +378,8 @@ impl App {
 
         let new_filtered = self.filter_indices(start_idx..end_idx);
         self.filtered.extend(new_filtered);
+        self.refresh_multiple_sources();
+        self.bump_results_version();
 
         // Select first item if nothing selected yet
         if self.selected.is_none() && !self.filtered.is_empty() {

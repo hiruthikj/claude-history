@@ -7,26 +7,8 @@
 //! (`text_match.rs`) are the other two halves of the vocabulary; this module
 //! must agree with them on what counts as a match.
 
-use crate::history::Conversation;
 use crate::search::literal::Literal;
 use crate::search::query::ParsedQuery;
-
-/// Byte ranges into `full_text` worth showing when the preview hides a match.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LexicalEvidence {
-    pub context_ranges: Vec<(usize, usize)>,
-}
-
-pub fn build_lexical_evidence(
-    conversation: &Conversation,
-    parsed: &ParsedQuery,
-) -> Option<LexicalEvidence> {
-    let ranges =
-        QueryMatcher::new(parsed).hidden_context(&conversation.full_text, &conversation.preview)?;
-    Some(LexicalEvidence {
-        context_ranges: ranges,
-    })
-}
 
 /// One thing the query asks for: a normalized, prefix-matched word or an
 /// exact (smart-case) literal.
@@ -691,9 +673,11 @@ mod tests {
             "unrelated preview",
             "unrelated preview followed by hidden deepgram evidence",
         );
-        let evidence = build_lexical_evidence(&conversation, &parsed).unwrap();
-        assert_eq!(evidence.context_ranges.len(), 1);
-        let (start, end) = evidence.context_ranges[0];
+        let ranges = QueryMatcher::new(&parsed)
+            .hidden_context(&conversation.full_text, &conversation.preview)
+            .unwrap();
+        assert_eq!(ranges.len(), 1);
+        let (start, end) = ranges[0];
         assert!(conversation.full_text[start..end].contains("deepgram"));
     }
 
@@ -704,8 +688,10 @@ mod tests {
             "audio generation normalized preview",
             "audio generation normalized preview and exact audio_generation evidence",
         );
-        let evidence = build_lexical_evidence(&conversation, &parsed).unwrap();
-        let (start, end) = evidence.context_ranges[0];
+        let ranges = QueryMatcher::new(&parsed)
+            .hidden_context(&conversation.full_text, &conversation.preview)
+            .unwrap();
+        let (start, end) = ranges[0];
         assert_eq!(&conversation.full_text[start..end], "audio_generation");
     }
 
@@ -714,9 +700,10 @@ mod tests {
         let parsed = ParsedQuery::parse("hidden_unquoted \"exact_literal\"");
         let full_text = format!("hidden_unquoted {} exact_literal", "x ".repeat(120));
         let conversation = conversation_with_text("visible preview", &full_text);
-        let evidence = build_lexical_evidence(&conversation, &parsed).unwrap();
-        let snippets = evidence
-            .context_ranges
+        let ranges = QueryMatcher::new(&parsed)
+            .hidden_context(&conversation.full_text, &conversation.preview)
+            .unwrap();
+        let snippets = ranges
             .iter()
             .map(|(start, end)| &conversation.full_text[*start..*end])
             .collect::<Vec<_>>();
