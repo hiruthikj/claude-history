@@ -3,6 +3,7 @@ pub mod literal;
 pub mod matcher;
 pub mod mode;
 pub mod query;
+pub mod scan;
 #[cfg(test)]
 pub mod test_fixtures;
 

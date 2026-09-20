@@ -9,6 +9,7 @@
 
 use crate::search::literal::Literal;
 use crate::search::query::ParsedQuery;
+use crate::search::scan;
 
 /// One thing the query asks for: a normalized, prefix-matched word or an
 /// exact (smart-case) literal.
@@ -341,86 +342,22 @@ fn select_hidden_context_ranges(
     )
 }
 
+/// A normalized `word` starting alphanumerically must begin at a word
+/// boundary; one starting with punctuation (`.rs`) carries its own boundary.
+fn word_requires_start(word: &str) -> bool {
+    word.chars().next().is_some_and(char::is_alphanumeric)
+}
+
 fn find_first_word_range(text: &str, word: &str) -> Option<(usize, usize)> {
-    let mut first = None;
-    scan_word(text, word, |range| {
-        first = Some(range);
-        false
-    });
-    first
+    let needle: Vec<char> = word.chars().collect();
+    scan::find_folded(text, &needle, word_requires_start(word))
 }
 
 /// All non-overlapping, left-word-bounded matches of a normalized `word` in
 /// raw `text`, as byte ranges into `text`.
 fn find_word_ranges(text: &str, word: &str) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    scan_word(text, word, |range| {
-        ranges.push(range);
-        true
-    });
-    ranges
-}
-
-/// Streams over `text`, lowercasing each char with full Unicode expansion (so
-/// `İ` matches the two chars `normalize_for_search` produces for it), and
-/// reports each match to `on_match` until it returns `false`. A word starting
-/// alphanumerically must start at a word boundary; a word starting with
-/// punctuation (`.rs`) carries its own boundary.
-fn scan_word(text: &str, word: &str, mut on_match: impl FnMut((usize, usize)) -> bool) {
-    let word_chars: Vec<char> = word.chars().collect();
-    let Some(&first_word_char) = word_chars.first() else {
-        return;
-    };
-    let word_starts_alnum = first_word_char.is_alphanumeric();
-
-    let mut prev_is_alnum = false;
-    let mut iter = text.char_indices().peekable();
-
-    while let Some(&(byte_start, ch)) = iter.peek() {
-        let valid_start = !word_starts_alnum || !prev_is_alnum;
-        if valid_start && let Some(end_byte) = match_word_at(&mut iter.clone(), &word_chars) {
-            if !on_match((byte_start, end_byte)) {
-                return;
-            }
-            // Skip the consumed chars; the last one decides the boundary for
-            // the next candidate.
-            let mut last_consumed = ch;
-            while let Some(&(pos, consumed)) = iter.peek() {
-                if pos >= end_byte {
-                    break;
-                }
-                last_consumed = consumed;
-                iter.next();
-            }
-            prev_is_alnum = last_consumed.is_alphanumeric();
-            continue;
-        }
-
-        prev_is_alnum = ch.is_alphanumeric();
-        iter.next();
-    }
-}
-
-/// Tries to match `word_chars` starting at the iterator's current position,
-/// returning the byte offset just past the last text char consumed.
-fn match_word_at(
-    iter: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
-    word_chars: &[char],
-) -> Option<usize> {
-    let mut remaining = word_chars.iter();
-    let mut expected = remaining.next()?;
-    for (byte_start, ch) in iter.by_ref() {
-        for lowered in ch.to_lowercase() {
-            if lowered != *expected {
-                return None;
-            }
-            match remaining.next() {
-                Some(next) => expected = next,
-                None => return Some(byte_start + ch.len_utf8()),
-            }
-        }
-    }
-    None
+    let needle: Vec<char> = word.chars().collect();
+    scan::find_all_folded(text, &needle, word_requires_start(word))
 }
 
 /// Merges word ranges whose gap consists only of `_`, `-`, `/` or spaces, so

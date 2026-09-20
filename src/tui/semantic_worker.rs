@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::history::Conversation;
-use crate::search::literal::{build_literal_corpus, exact_fallback};
+use crate::search::literal::exact_fallback;
 use crate::search::query::ParsedQuery;
 use crate::semantic::cache::write_embedding_cache;
 use crate::semantic::fastembed::FastembedEmbedder;
@@ -408,16 +408,11 @@ fn exact_literal_semantic_response(
     scope: &[usize],
     parsed: &ParsedQuery,
 ) -> SemanticSearchResponse {
-    let plain_conversations = conversations
-        .iter()
-        .map(|conversation| conversation.as_ref().clone())
-        .collect::<Vec<_>>();
-    let corpus = build_literal_corpus(&plain_conversations);
     let scope = scope
         .iter()
         .copied()
         .collect::<std::collections::HashSet<_>>();
-    let filtered = exact_fallback(&plain_conversations, &corpus, parsed.literals(), |index| {
+    let filtered = exact_fallback(conversations, parsed.literals(), false, |index| {
         scope.contains(&index)
     });
 

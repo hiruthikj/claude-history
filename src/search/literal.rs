@@ -1,6 +1,7 @@
 use crate::history::Conversation;
+use crate::search::scan;
 use rayon::prelude::*;
-use std::collections::VecDeque;
+use std::borrow::Borrow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseMode {
@@ -55,91 +56,8 @@ impl Literal {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiteralCorpusEntry {
-    pub index: usize,
-    pub text: String,
-}
-
-pub fn build_literal_corpus(conversations: &[Conversation]) -> Vec<LiteralCorpusEntry> {
-    build_literal_corpus_with(conversations, false)
-}
-
-pub fn build_agent_literal_corpus(conversations: &[Conversation]) -> Vec<LiteralCorpusEntry> {
-    build_literal_corpus_with(conversations, true)
-}
-
-fn build_literal_corpus_with(
-    conversations: &[Conversation],
-    include_agent_text: bool,
-) -> Vec<LiteralCorpusEntry> {
-    conversations
-        .par_iter()
-        .enumerate()
-        .map(|(index, conversation)| LiteralCorpusEntry {
-            index,
-            text: literal_text(conversation, include_agent_text),
-        })
-        .collect()
-}
-
-pub fn matches_all_literals(text: &str, literals: &[Literal]) -> bool {
-    literals.iter().all(|literal| literal.matches(text))
-}
-
-pub fn conversation_matches_all_literals(
-    conversation: &Conversation,
-    literals: &[Literal],
-) -> bool {
-    matches_all_literals(&literal_text(conversation, false), literals)
-}
-
-pub fn match_literal_ranges(text: &str, literals: &[Literal]) -> Vec<(usize, usize)> {
-    literals
-        .iter()
-        .flat_map(|literal| literal.match_ranges(text))
-        .collect()
-}
-
-pub fn exact_fallback(
-    conversations: &[Conversation],
-    corpus: &[LiteralCorpusEntry],
-    literals: &[Literal],
-    scope: impl Fn(usize) -> bool + Sync,
-) -> Vec<usize> {
-    if literals.is_empty() {
-        return Vec::new();
-    }
-
-    let mut matches = corpus
-        .par_iter()
-        .filter(|entry| scope(entry.index) && matches_all_literals(&entry.text, literals))
-        .map(|entry| (entry.index, conversations[entry.index].timestamp))
-        .collect::<Vec<_>>();
-
-    matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-    matches.into_iter().map(|(index, _)| index).collect()
-}
-
 fn contains_case_insensitive(text: &str, needle: &str) -> bool {
-    let needle_chars: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
-    if needle_chars.is_empty() {
-        return false;
-    }
-
-    let mut window = VecDeque::with_capacity(needle_chars.len());
-    for folded in text.chars().flat_map(char::to_lowercase) {
-        window.push_back(folded);
-        if window.len() > needle_chars.len() {
-            window.pop_front();
-        }
-        if window.len() == needle_chars.len()
-            && window.iter().copied().eq(needle_chars.iter().copied())
-        {
-            return true;
-        }
-    }
-    false
+    scan::find_folded(text, &scan::fold_needle(needle), false).is_some()
 }
 
 fn find_substring_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
@@ -155,55 +73,63 @@ fn find_substring_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
 }
 
 fn find_case_insensitive_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
-    let needle_chars: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
-    if needle_chars.is_empty() {
+    scan::find_all_folded(text, &scan::fold_needle(needle), false)
+}
+
+/// A literal is satisfied by any one part of the conversation's raw text:
+/// the transcript, the agent-only text when the caller searches it, or the
+/// project name. Parts are not joined, so a literal never matches across the
+/// boundary between them.
+fn literal_matches_conversation(
+    conversation: &Conversation,
+    literal: &Literal,
+    include_agent_text: bool,
+) -> bool {
+    literal.matches(&conversation.full_text)
+        || (include_agent_text && literal.matches(&conversation.agent_search_text))
+        || conversation
+            .project_name
+            .as_deref()
+            .is_some_and(|name| literal.matches(name))
+}
+
+pub fn conversation_matches_all_literals(
+    conversation: &Conversation,
+    literals: &[Literal],
+    include_agent_text: bool,
+) -> bool {
+    literals
+        .iter()
+        .all(|literal| literal_matches_conversation(conversation, literal, include_agent_text))
+}
+
+/// Conversations in `scope` that contain every literal, newest first.
+pub fn exact_fallback<C: Borrow<Conversation> + Sync>(
+    conversations: &[C],
+    literals: &[Literal],
+    include_agent_text: bool,
+    scope: impl Fn(usize) -> bool + Sync,
+) -> Vec<usize> {
+    if literals.is_empty() {
         return Vec::new();
     }
 
-    let mut folded_chars = Vec::new();
-    let mut folded_map = Vec::new();
-    for (start, ch) in text.char_indices() {
-        let end = start + ch.len_utf8();
-        for folded in ch.to_lowercase() {
-            folded_chars.push(folded);
-            folded_map.push((start, end));
-        }
-    }
+    let mut matches = conversations
+        .par_iter()
+        .enumerate()
+        .filter(|(index, conversation)| {
+            let conversation: &Conversation = (*conversation).borrow();
+            scope(*index)
+                && conversation_matches_all_literals(conversation, literals, include_agent_text)
+        })
+        .map(|(index, conversation)| {
+            let conversation: &Conversation = conversation.borrow();
+            (index, conversation.timestamp)
+        })
+        .collect::<Vec<_>>();
 
-    let mut ranges = Vec::new();
-    let mut i = 0;
-    while i + needle_chars.len() <= folded_chars.len() {
-        if folded_chars[i..i + needle_chars.len()] == needle_chars[..] {
-            ranges.push((folded_map[i].0, folded_map[i + needle_chars.len() - 1].1));
-            i += needle_chars.len();
-        } else {
-            i += 1;
-        }
-    }
-    ranges
-}
-
-fn literal_text(conversation: &Conversation, include_agent_text: bool) -> String {
-    let mut text = String::new();
-    push_part(&mut text, Some(&conversation.full_text));
-    if include_agent_text {
-        push_part(&mut text, Some(&conversation.agent_search_text));
-    }
-    push_part(&mut text, conversation.project_name.as_deref());
-    text
-}
-
-fn push_part(text: &mut String, part: Option<&str>) {
-    let Some(part) = part else {
-        return;
-    };
-    if part.is_empty() {
-        return;
-    }
-    if !text.is_empty() {
-        text.push(' ');
-    }
-    text.push_str(part);
+    matches.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    matches.into_iter().map(|(index, _)| index).collect()
 }
 
 #[cfg(test)]
@@ -258,39 +184,48 @@ mod tests {
     }
 
     #[test]
-    fn corpus_preserves_punctuation_and_metadata() {
+    fn literals_match_raw_text_metadata_and_project_name() {
         let now = Local::now();
-        let conversations = vec![make_conv_full(
+        let conversation = make_conv_full(
             "body_with_under_score and punctuation: yes",
             Some("project_name/raw-value"),
             Some("Title: Raw_Value"),
             Some("Summary.with punctuation"),
             now,
-        )];
+        );
+        let matches = |text: &str| {
+            conversation_matches_all_literals(
+                &conversation,
+                &[Literal::new(text.to_string())],
+                false,
+            )
+        };
 
-        let corpus = build_literal_corpus(&conversations);
-
-        assert!(corpus[0].text.contains("body_with_under_score"));
-        assert!(corpus[0].text.contains("punctuation: yes"));
-        assert!(corpus[0].text.contains("project_name/raw-value"));
-        assert!(corpus[0].text.contains("Title: Raw_Value"));
-        assert!(corpus[0].text.contains("Summary.with punctuation"));
+        assert!(matches("body_with_under_score"));
+        assert!(matches("punctuation: yes"));
+        assert!(matches("project_name/raw-value"));
+        assert!(matches("Title: Raw_Value"));
+        assert!(matches("Summary.with punctuation"));
+        assert!(!matches("yes project_name"), "parts are not joined");
     }
 
     #[test]
-    fn corpus_does_not_duplicate_title_and_summary() {
+    fn agent_text_is_searched_only_when_asked() {
         let now = Local::now();
-        let conversations = vec![make_conv_full(
-            "body sentinel",
-            None,
-            Some("TitleA"),
-            Some("SummaryB"),
-            now,
-        )];
+        let mut conversation = make_conv_full("body", None, None, None, now);
+        conversation.agent_search_text = "agent_only_token".to_string();
+        let literals = [Literal::new("agent_only_token".to_string())];
 
-        let corpus = build_literal_corpus(&conversations);
-
-        assert!(!corpus[0].text.contains("SummaryB TitleA"));
+        assert!(!conversation_matches_all_literals(
+            &conversation,
+            &literals,
+            false
+        ));
+        assert!(conversation_matches_all_literals(
+            &conversation,
+            &literals,
+            true
+        ));
     }
 
     #[test]
@@ -301,10 +236,9 @@ mod tests {
             make_conv_full("needle phrase", None, None, None, now),
             make_conv_full("needle phrase", None, None, None, now - Duration::hours(1)),
         ];
-        let corpus = build_literal_corpus(&conversations);
         let literal = Literal::new("needle phrase".to_string());
 
-        let results = exact_fallback(&conversations, &corpus, &[literal], |index| index != 1);
+        let results = exact_fallback(&conversations, &[literal], false, |index| index != 1);
 
         assert_eq!(results, vec![2, 0]);
     }
@@ -316,13 +250,12 @@ mod tests {
             make_conv_full("alpha beta", None, None, None, now),
             make_conv_full("alpha gamma", None, None, None, now),
         ];
-        let corpus = build_literal_corpus(&conversations);
         let literals = vec![
             Literal::new("alpha".to_string()),
             Literal::new("beta".to_string()),
         ];
 
-        let results = exact_fallback(&conversations, &corpus, &literals, |_| true);
+        let results = exact_fallback(&conversations, &literals, false, |_| true);
 
         assert_eq!(results, vec![0]);
     }

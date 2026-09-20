@@ -148,7 +148,11 @@ after the terminal guard is dropped.
   stripped in `history/parser.rs`) is what separates "about X" from "mentions
   X". Word-boundary rules live in `text_match.rs` and are shared with
   `search/matcher.rs` and the agent retrieval paths: a query word starting
-  with punctuation does not require a word start.
+  with punctuation does not require a word start. Anything that locates a
+  needle in *raw* `full_text` (highlights, hidden context, quoted literals)
+  goes through `search/scan.rs`, the one memchr-driven, Unicode-folding
+  scanner; quoted literals are matched against a conversation's parts
+  directly, never against a per-query concatenated corpus.
 - `search/matcher.rs::QueryMatcher` is the one place that locates a
   `ParsedQuery` in text: highlight ranges, "is this literal visible in the
   preview", and `hidden_context` (ranges in `full_text` worth showing when

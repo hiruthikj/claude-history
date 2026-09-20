@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::history::Conversation;
-use crate::search::literal::{build_literal_corpus, exact_fallback};
+use crate::search::literal::exact_fallback;
 use crate::search::query::ParsedQuery;
 use crate::semantic::filter::filter_embedded_chunks_by_literals;
 use crate::semantic::types::SemanticCancellationToken;
@@ -367,12 +367,7 @@ fn format_exact_hit(rank: usize, conversation: &Conversation) -> String {
 }
 
 fn exact_literal_indices(conversations: &[&Conversation], parsed: &ParsedQuery) -> Vec<usize> {
-    let plain_conversations = conversations
-        .iter()
-        .map(|conversation| (*conversation).clone())
-        .collect::<Vec<_>>();
-    let corpus = build_literal_corpus(&plain_conversations);
-    exact_fallback(&plain_conversations, &corpus, parsed.literals(), |_| true)
+    exact_fallback(conversations, parsed.literals(), false, |_| true)
 }
 
 fn format_parsed_query(parsed: &ParsedQuery) -> String {

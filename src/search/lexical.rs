@@ -1,8 +1,5 @@
 use crate::history::Conversation;
-use crate::search::literal::{
-    LiteralCorpusEntry, build_agent_literal_corpus, build_literal_corpus, exact_fallback,
-    matches_all_literals,
-};
+use crate::search::literal::{conversation_matches_all_literals, exact_fallback};
 use crate::search::query::ParsedQuery;
 pub use crate::text_match::normalize_for_search;
 use crate::text_match::{
@@ -213,12 +210,12 @@ fn debug_search_with_surface(
 
 fn exact_debug_results(
     conversations: &[Conversation],
-    corpus: &[LiteralCorpusEntry],
     parsed: &ParsedQuery,
     now: DateTime<Local>,
+    include_agent_text: bool,
     scope: impl Fn(usize) -> bool + Sync,
 ) -> Vec<(usize, ScoreDebug)> {
-    exact_fallback(conversations, corpus, parsed.literals(), scope)
+    exact_fallback(conversations, parsed.literals(), include_agent_text, scope)
         .into_iter()
         .map(|index| {
             let fresh = freshness_bonus(conversations[index].timestamp, now);
@@ -354,12 +351,7 @@ fn search_debug_with_query(
     }
 
     if parsed.is_quoted_only() {
-        let corpus = if include_agent_text {
-            build_agent_literal_corpus(conversations)
-        } else {
-            build_literal_corpus(conversations)
-        };
-        return exact_debug_results(conversations, &corpus, parsed, now, scope);
+        return exact_debug_results(conversations, parsed, now, include_agent_text, scope);
     }
 
     let query_lower = normalized_query_words(intent);
@@ -385,12 +377,7 @@ fn search_debug_with_query(
         if literal_filters.is_empty() {
             return browse_debug_results(conversations, now, scope);
         }
-        let corpus = if include_agent_text {
-            build_agent_literal_corpus(conversations)
-        } else {
-            build_literal_corpus(conversations)
-        };
-        return exact_fallback(conversations, &corpus, &literal_filters, scope)
+        return exact_fallback(conversations, &literal_filters, include_agent_text, scope)
             .into_iter()
             .map(|index| {
                 let fresh = freshness_bonus(conversations[index].timestamp, now);
@@ -399,21 +386,16 @@ fn search_debug_with_query(
             .collect();
     }
 
-    let corpus = if literal_filters.is_empty() {
-        None
-    } else if include_agent_text {
-        Some(build_agent_literal_corpus(conversations))
-    } else {
-        Some(build_literal_corpus(conversations))
-    };
-
     let mut scored: Vec<(usize, ScoreDebug, DateTime<Local>)> = searchable
         .par_iter()
         .filter_map(|s| {
             if !scope(s.index)
-                || corpus.as_ref().is_some_and(|corpus| {
-                    !matches_all_literals(&corpus[s.index].text, &literal_filters)
-                })
+                || (!literal_filters.is_empty()
+                    && !conversation_matches_all_literals(
+                        &conversations[s.index],
+                        &literal_filters,
+                        include_agent_text,
+                    ))
             {
                 return None;
             }
