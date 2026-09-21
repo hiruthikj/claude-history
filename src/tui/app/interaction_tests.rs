@@ -169,6 +169,7 @@ fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
         vec![],
         TuiSearchOptions {
             default_mode: ListSearchMode::Semantic,
+            ..Default::default()
         },
     );
     let (_request_tx, _request_rx, response_tx) = connect_semantic_search_channels(&mut app);
@@ -219,6 +220,7 @@ fn semantic_list_click_uses_three_line_rows() {
         vec![],
         TuiSearchOptions {
             default_mode: ListSearchMode::Semantic,
+            ..Default::default()
         },
     );
     let (_request_tx, request_rx) = mpsc::channel();

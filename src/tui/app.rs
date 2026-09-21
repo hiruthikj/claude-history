@@ -1,5 +1,6 @@
 use crate::config::KeyBindings;
 use crate::history::{Conversation, format_short_name_from_path, process_conversation_file};
+use crate::search::mode::SortMode;
 use crate::search::{self, SearchableConversation};
 #[cfg(test)]
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
@@ -103,6 +104,8 @@ pub struct App {
     search_in_flight: bool,
     /// Current list search mode
     list_search_mode: ListSearchMode,
+    /// Ordering of list search hits (relevance score vs newest first)
+    list_sort: SortMode,
     /// Semantic TUI state
     semantic_search: SemanticSearchState,
     /// Bumped whenever `filtered`, the semantic results or the corpus change;
@@ -133,6 +136,7 @@ struct AppParts {
     search_tx: mpsc::Sender<SearchCommand>,
     search_rx: mpsc::Receiver<SearchResponse>,
     list_search_mode: ListSearchMode,
+    list_sort: SortMode,
     semantic_search: SemanticSearchState,
 }
 
@@ -171,6 +175,7 @@ impl App {
             search_generation: 0,
             search_in_flight: false,
             list_search_mode: parts.list_search_mode,
+            list_sort: parts.list_sort,
             semantic_search: parts.semantic_search,
             results_version: 0,
             row_evidence: rows::RowEvidenceCache::default(),
@@ -199,6 +204,10 @@ impl App {
 
     fn list_search_mode_from_options(search_options: TuiSearchOptions) -> ListSearchMode {
         search_options.default_mode
+    }
+
+    fn list_sort_from_options(search_options: TuiSearchOptions) -> SortMode {
+        search_options.sort
     }
 
     fn semantic_search_state(available: bool) -> SemanticSearchState {
@@ -270,6 +279,7 @@ impl App {
             search_tx,
             search_rx,
             list_search_mode: Self::list_search_mode_from_options(search_options),
+            list_sort: Self::list_sort_from_options(search_options),
             semantic_search: Self::semantic_search_state(true),
         })
     }
@@ -306,6 +316,7 @@ impl App {
             search_tx,
             search_rx,
             list_search_mode: Self::list_search_mode_from_options(search_options),
+            list_sort: Self::list_sort_from_options(search_options),
             semantic_search: Self::semantic_search_state(true),
         })
     }
@@ -361,6 +372,7 @@ impl App {
             search_tx,
             search_rx,
             list_search_mode: ListSearchMode::Lexical,
+            list_sort: SortMode::default(),
             semantic_search: Self::semantic_search_state(false),
         })
     }
@@ -485,6 +497,10 @@ impl App {
 
     pub fn list_search_mode(&self) -> ListSearchMode {
         self.list_search_mode
+    }
+
+    pub fn list_sort(&self) -> SortMode {
+        self.list_sort
     }
 
     pub fn semantic_search_available(&self) -> bool {

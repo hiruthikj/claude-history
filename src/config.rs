@@ -1,5 +1,5 @@
 use crate::error::{AppError, Result};
-use crate::search::mode::SearchMode;
+use crate::search::mode::{SearchMode, SortMode};
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::Deserialize;
 use std::fs;
@@ -27,6 +27,7 @@ pub struct ConfigFile {
 #[serde(deny_unknown_fields)]
 pub struct SearchConfig {
     pub mode: Option<SearchMode>,
+    pub sort: Option<SortMode>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -147,6 +148,25 @@ mode = "vector"
         .expect_err("unknown search mode should fail");
 
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn search_sort_parses_recency_and_defaults_to_relevance() {
+        let config: ConfigFile = toml::from_str("").unwrap();
+        assert_eq!(config.search.unwrap_or_default().sort, None);
+
+        let config: ConfigFile = toml::from_str(
+            r#"
+[search]
+sort = "recency"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.search.unwrap().sort,
+            Some(crate::search::mode::SortMode::Recency)
+        );
     }
 
     #[test]

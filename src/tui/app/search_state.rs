@@ -1,5 +1,6 @@
 use super::{App, ListSearchMode, SemanticProgress, SemanticResultMetadata};
 use crate::history::{Conversation, format_short_name_from_path};
+use crate::search::mode::SortMode;
 use crate::search::query::ParsedQuery;
 use crate::search::{self, SearchableConversation};
 use crate::semantic::types::SemanticCancellationToken;
@@ -342,7 +343,8 @@ impl App {
                 && response.mode == self.list_search_mode
                 && (response.mode == ListSearchMode::Lexical || semantic_fallback_pending)
             {
-                let filtered = self.filter_indices(response.filtered);
+                let mut filtered = self.filter_indices(response.filtered);
+                self.apply_sort_order(&mut filtered);
                 if response.mode == ListSearchMode::Semantic && filtered.is_empty() {
                     self.search_in_flight = false;
                     continue;
@@ -559,10 +561,23 @@ impl App {
         }
     }
 
+    /// Newest-first ordering for recency sort. Stable, so equal timestamps
+    /// keep their relevance order as tiebreak.
+    fn apply_sort_order(&self, filtered: &mut [usize]) {
+        if self.list_sort() == SortMode::Recency {
+            filtered.sort_by(|&a, &b| {
+                self.conversations[b]
+                    .timestamp
+                    .cmp(&self.conversations[a].timestamp)
+            });
+        }
+    }
+
     pub(super) fn apply_lexical_filter(&mut self) {
         let now = Local::now();
         let filtered = search::search(&self.conversations, &self.searchable, &self.query, now);
-        let filtered = self.filter_indices(filtered);
+        let mut filtered = self.filter_indices(filtered);
+        self.apply_sort_order(&mut filtered);
         self.apply_filtered(filtered);
     }
 

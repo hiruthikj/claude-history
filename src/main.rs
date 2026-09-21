@@ -175,6 +175,7 @@ fn run() -> Result<()> {
         config_mode: search_config.mode,
         tui_semantic_search: tui_config.semantic_search,
     });
+    let sort_mode = args.sort.or(search_config.sort).unwrap_or_default();
     let exclude_projects = tui_config.exclude_projects;
 
     // Disable colors globally when --no-color is passed
@@ -450,6 +451,7 @@ fn run() -> Result<()> {
         exclude_projects,
         tui::TuiSearchOptions {
             default_mode: tui_search_mode(search_mode),
+            sort: sort_mode,
         },
     )
     .map_err(describe_empty)?

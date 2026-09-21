@@ -30,6 +30,17 @@ pub enum TuiSearchMode {
     Semantic,
 }
 
+/// Ordering of TUI search hits. `Relevance` is score-descending with recency
+/// as tiebreak; `Recency` is newest-first with relevance kept only as
+/// tiebreak (via stable sort) for equal timestamps.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum SortMode {
+    #[default]
+    Relevance,
+    Recency,
+}
+
 pub fn resolve_search_mode(resolution: SearchModeResolution) -> SearchMode {
     resolution
         .cli_mode

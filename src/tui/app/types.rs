@@ -1,3 +1,4 @@
+use crate::search::mode::SortMode;
 use crate::search::query::ParsedQuery;
 use crate::semantic::types::{SemanticExplanation, SemanticScoreBreakdown};
 use crate::tui::viewer::{
@@ -97,17 +98,10 @@ pub enum ViewSearchMode {
     Active,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TuiSearchOptions {
     pub default_mode: ListSearchMode,
-}
-
-impl Default for TuiSearchOptions {
-    fn default() -> Self {
-        Self {
-            default_mode: ListSearchMode::Lexical,
-        }
-    }
+    pub sort: SortMode,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

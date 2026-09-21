@@ -1,5 +1,6 @@
 use crate::config::KeyBindings;
 use crate::search::QueryMatcher;
+use crate::search::mode::SortMode;
 use crate::tui::app::{
     App, AppMode, DialogMode, ListSearchMode, LoadingState, ViewSearchMode, ViewState,
     list_lines_per_item,
@@ -241,6 +242,16 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+T", key_style),
             Span::styled(" semantic·", label_style),
             Span::styled(app.list_search_mode().label(), mode_style),
+            Span::raw("  "),
+        ]);
+    }
+
+    // Non-default hit ordering gets a chip so a date-ordered list is never a
+    // surprise (e.g. set via --sort or [search].sort).
+    if app.list_sort() == SortMode::Recency {
+        spans.extend([
+            Span::styled("sort·", label_style),
+            Span::styled("newest", Style::default().fg(rgb(th().accent)).bold()),
             Span::raw("  "),
         ]);
     }
@@ -1702,6 +1713,7 @@ mod tests {
             vec![],
             TuiSearchOptions {
                 default_mode: ListSearchMode::Semantic,
+                ..Default::default()
             },
         )
     }
@@ -2070,6 +2082,7 @@ mod tests {
             vec![],
             TuiSearchOptions {
                 default_mode: ListSearchMode::Semantic,
+                ..Default::default()
             },
         );
         app.set_query_for_test("sentinel");
@@ -2420,6 +2433,7 @@ mod tests {
             vec![],
             TuiSearchOptions {
                 default_mode: ListSearchMode::Semantic,
+                ..Default::default()
             },
         );
         app.set_query_for_test("semantic \"audio_generation\"");
@@ -2493,6 +2507,7 @@ mod tests {
             vec![],
             TuiSearchOptions {
                 default_mode: ListSearchMode::Semantic,
+                ..Default::default()
             },
         );
         app.set_query_for_test("semantic \"alpha_exact\" \"beta_exact\"");

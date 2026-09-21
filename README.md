@@ -299,6 +299,12 @@ Uppercase inside or across a word (`ScoreDebug`, `API_KEY`) makes that exact
 match case-sensitive; a leading capital (`Fix parser`) does not. Within
 equally relevant results, recent conversations rank first.
 
+When you want the newest matches first regardless of score, pass
+`--sort recency` (or set `sort = "recency"` under `[search]`); the status bar
+shows `sort·newest` while it is active. Date-ordered lists pair best with
+quoted phrases: unquoted multi-word queries still require every word, so
+common words flood the list with every session that mentions them.
+
 ### Time filtering
 
 `--since` narrows to recent conversations, `--before` to older ones, and the two
@@ -444,6 +450,7 @@ Options:
       --debug-search <QUERY>  Debug search result scoring for a query
       --debug [<LEVEL>]  Print debug information (optionally filter by level: debug, info, warn, error)
   -L, --local            Show only conversations from the current workspace directory
+      --sort <SORT>      Order TUI search hits by relevance score or by recency (newest first) [possible values: relevance, recency]
       --since <WHEN>     Only conversations this recent (duration or date)
       --after <WHEN>     Alias for --since
       --before <WHEN>    Only conversations older than this duration or date
@@ -664,6 +671,8 @@ pager = true
 [search]
 # Search mode used by the conversation list
 mode = "lexical"
+# Hit ordering: "relevance" (default) or "recency" (newest first)
+# sort = "relevance"
 
 [tui]
 # Hide exact project names from TUI browse/search lists
@@ -711,6 +720,10 @@ are key combinations like `"ctrl+r"`, `"alt+f"`, or `"f2"`.
 
 - `mode` (string): Search mode for the conversation list. Supported values are
   `lexical` and `semantic` (default: `lexical`).
+- `sort` (string): Hit ordering for the conversation list: `relevance` ranks
+  by score with recency as tiebreak, `recency` lists newest first with
+  relevance as tiebreak (default: `relevance`). The `--sort` flag overrides
+  it.
 
 #### TUI options
 

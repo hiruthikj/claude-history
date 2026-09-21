@@ -1,5 +1,5 @@
 use crate::agent::protocol::MessageLineRange;
-use crate::search::mode::SearchMode;
+use crate::search::mode::{SearchMode, SortMode};
 use crate::time_filter::{TimeFilter, TimeFilterError, TimePoint};
 use clap::{ArgGroup, Args as ClapArgs, Parser, Subcommand};
 use std::fmt;
@@ -397,6 +397,10 @@ pub struct Args {
     )]
     pub local: bool,
 
+    /// Order TUI search hits by relevance score or by recency (newest first)
+    #[arg(long, value_enum)]
+    pub sort: Option<SortMode>,
+
     #[command(flatten)]
     pub time: TimeRangeArgs,
 
@@ -568,6 +572,20 @@ mod tests {
         let args = Args::try_parse_from(["claude-history", "--since", "1w"]).unwrap();
         assert!(args.time.since.is_some());
         assert!(args.time.resolve().unwrap().is_active());
+    }
+
+    #[test]
+    fn sort_flag_parses_recency_and_rejects_unknown() {
+        let args = Args::try_parse_from(["claude-history", "--sort", "recency"]).unwrap();
+        assert_eq!(args.sort, Some(SortMode::Recency));
+
+        let args = Args::try_parse_from(["claude-history", "--sort", "relevance"]).unwrap();
+        assert_eq!(args.sort, Some(SortMode::Relevance));
+
+        let args = Args::try_parse_from(["claude-history"]).unwrap();
+        assert_eq!(args.sort, None);
+
+        assert!(Args::try_parse_from(["claude-history", "--sort", "newest"]).is_err());
     }
 
     #[test]
