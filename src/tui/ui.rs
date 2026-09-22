@@ -246,15 +246,16 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ]);
     }
 
-    // Non-default hit ordering gets a chip so a date-ordered list is never a
-    // surprise (e.g. set via --sort or [search].sort).
-    if app.list_sort() == SortMode::Recency {
-        spans.extend([
-            Span::styled("sort·", label_style),
-            Span::styled("newest", Style::default().fg(rgb(th().accent)).bold()),
-            Span::raw("  "),
-        ]);
-    }
+    let (sort_label, sort_style) = match app.list_sort() {
+        SortMode::Relevance => ("best", label_style),
+        SortMode::Recency => ("newest", Style::default().fg(rgb(th().accent)).bold()),
+    };
+    spans.extend([
+        Span::styled(keys.sort.short_label(), key_style),
+        Span::styled(" sort·", label_style),
+        Span::styled(sort_label, sort_style),
+        Span::raw("  "),
+    ]);
 
     spans.extend([
         Span::styled("?", key_style),
@@ -1322,6 +1323,7 @@ fn render_help_overlay(
             ("PgUp / PgDn".into(), "Jump by page"),
             ("Home / End".into(), "Jump to first/last"),
             ("Tab".into(), "Toggle scope (All/Project)"),
+            (keys.sort.help_label(), "Sort: best match / newest"),
             ("Enter".into(), "Open viewer"),
             ("Ctrl+O".into(), "Select and exit"),
             ("Ctrl+W".into(), "Delete word"),
@@ -1332,8 +1334,8 @@ fn render_help_overlay(
             ("Esc".into(), "Quit"),
         ];
         if semantic_available {
-            shortcuts.insert(9, ("Ctrl+T".into(), "Toggle semantic search"));
-            shortcuts.insert(10, ("Ctrl+S".into(), "Semantic details"));
+            shortcuts.insert(10, ("Ctrl+T".into(), "Toggle semantic search"));
+            shortcuts.insert(11, ("Ctrl+S".into(), "Semantic details"));
         }
         shortcuts
     };

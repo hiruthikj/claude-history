@@ -407,7 +407,8 @@ impl App {
                                 self.semantic_search.last_status = response.progress;
                                 self.semantic_search.error = response.error;
                                 self.semantic_search.results = response.metadata;
-                                let filtered = self.filter_indices(response.filtered);
+                                let mut filtered = self.filter_indices(response.filtered);
+                                self.apply_sort_order(&mut filtered);
                                 self.apply_filtered(filtered);
                                 applied = true;
                             }
@@ -549,6 +550,18 @@ impl App {
         } else {
             self.dispatch_search();
         }
+    }
+
+    /// Flips between relevance and newest-first ordering and re-runs the
+    /// query: going back to relevance needs the ranked order, which a re-sort
+    /// of the current list cannot recover.
+    pub(super) fn toggle_list_sort(&mut self) {
+        self.list_sort = match self.list_sort {
+            SortMode::Relevance => SortMode::Recency,
+            SortMode::Recency => SortMode::Relevance,
+        };
+        self.invalidate_search_generation();
+        self.dispatch_search();
     }
 
     pub(super) fn apply_uuid_filter(&mut self, query: &str) -> bool {

@@ -300,8 +300,9 @@ match case-sensitive; a leading capital (`Fix parser`) does not. Within
 equally relevant results, recent conversations rank first.
 
 When you want the newest matches first regardless of score, pass
-`--sort recency` (or set `sort = "recency"` under `[search]`); the status bar
-shows `sort·newest` while it is active. Date-ordered lists pair best with
+`--sort recency` (or set `sort = "recency"` under `[search]`), or press
+`Alt+S` in the list to flip between best match and newest; the status bar
+shows the current order. Date-ordered lists pair best with
 quoted phrases: unquoted multi-word queries still require every word, so
 common words flood the list with every session that mentions them.
 
@@ -663,10 +664,11 @@ pager = true
 # Example: default_args = ["--dangerously-skip-permissions"]
 
 [keys]
-# Customize keybindings (default: ctrl+r, ctrl+f, f2, ctrl+x)
+# Customize keybindings (default: ctrl+r, ctrl+f, f2, ctrl+x, alt+s)
 # Supports ctrl+<key>, alt+<key>, single-character keys, and f1-f12
 # rename = "alt+r"
 # fork = "alt+f"
+# sort = "alt+o"   # flip best match / newest in the list
 
 [search]
 # Search mode used by the conversation list
@@ -715,6 +717,7 @@ are key combinations like `"ctrl+r"`, `"alt+f"`, or `"f2"`.
 - `fork` (string): Fork and resume conversation (default: `"ctrl+f"`)
 - `rename` (string): Rename selected session (default: `"f2"`)
 - `delete` (string): Delete conversation (default: `"ctrl+x"`)
+- `sort` (string): Flip list hits between best match and newest first (default: `"alt+s"`)
 
 #### Search options
 

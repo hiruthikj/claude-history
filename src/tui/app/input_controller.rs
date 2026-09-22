@@ -453,6 +453,10 @@ impl App {
         if self.keys.fork.matches(code, modifiers) {
             return self.get_selected_path().map(Action::ForkResume);
         }
+        if self.keys.sort.matches(code, modifiers) {
+            self.toggle_list_sort();
+            return None;
+        }
 
         match code {
             _ if self.keys.rename.matches(code, modifiers) => {

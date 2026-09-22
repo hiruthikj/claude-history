@@ -318,6 +318,40 @@ fn recency_sort_orders_newest_first_despite_weaker_relevance() {
     );
 }
 
+fn wait_for_search(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.search_in_flight {
+        assert!(std::time::Instant::now() < deadline, "search never settled");
+        app.receive_search_results();
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn sort_key_flips_order_and_back_to_relevance() {
+    let mut app = app(sort_conversations(), vec![]);
+    app.query = "config".to_string();
+    app.update_filter();
+    let relevance = vec![
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ];
+    assert_eq!(filtered_session_ids(&app), relevance);
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT, 10);
+    assert_eq!(app.list_sort(), SortMode::Recency);
+    wait_for_search(&mut app);
+    assert_eq!(
+        filtered_session_ids(&app),
+        relevance.iter().rev().copied().collect::<Vec<_>>()
+    );
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::ALT, 10);
+    assert_eq!(app.list_sort(), SortMode::Relevance);
+    wait_for_search(&mut app);
+    assert_eq!(filtered_session_ids(&app), relevance);
+}
+
 #[test]
 fn exclude_projects_apply_before_workspace_filter() {
     let mut app = app(
@@ -561,6 +595,38 @@ fn current_generation_semantic_response_is_ignored_while_lexical_mode_is_active(
     assert_eq!(app.filtered(), &[0]);
     assert_eq!(app.selected(), Some(0));
     assert!(app.semantic_search.results.is_empty());
+}
+
+#[test]
+fn recency_sort_reorders_semantic_results_newest_first() {
+    let mut app = app_with_options(
+        sort_conversations(),
+        vec![],
+        TuiSearchOptions {
+            default_mode: ListSearchMode::Semantic,
+            sort: SortMode::Recency,
+        },
+    );
+    let (_request_tx, _request_rx, response_tx) = connect_semantic_search_channels(&mut app);
+    app.search_generation = 3;
+    app.semantic_search.pending_generation = Some(3);
+    let old_relevant = app
+        .conversations()
+        .iter()
+        .position(|c| c.session_id.starts_with("1111"))
+        .unwrap();
+    let new_weak = 1 - old_relevant;
+
+    send_semantic_complete_response(
+        &response_tx,
+        3,
+        vec![old_relevant, new_weak],
+        HashMap::new(),
+        SemanticProgress::Complete,
+    );
+
+    assert!(app.receive_search_results());
+    assert_eq!(app.filtered(), &[new_weak, old_relevant]);
 }
 
 #[test]

@@ -265,6 +265,7 @@ pub struct KeysConfig {
     pub fork: Option<KeyBinding>,
     pub rename: Option<KeyBinding>,
     pub delete: Option<KeyBinding>,
+    pub sort: Option<KeyBinding>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -364,6 +365,7 @@ pub struct KeyBindings {
     pub fork: KeyBinding,
     pub rename: KeyBinding,
     pub delete: KeyBinding,
+    pub sort: KeyBinding,
 }
 
 impl Default for KeyBindings {
@@ -385,6 +387,10 @@ impl Default for KeyBindings {
                 code: KeyCode::Char('x'),
                 modifiers: KeyModifiers::CONTROL,
             },
+            sort: KeyBinding {
+                code: KeyCode::Char('s'),
+                modifiers: KeyModifiers::ALT,
+            },
         }
     }
 }
@@ -399,6 +405,7 @@ impl KeyBindings {
                 fork: cfg.fork.unwrap_or(defaults.fork),
                 rename: cfg.rename.unwrap_or(defaults.rename),
                 delete: cfg.delete.unwrap_or(defaults.delete),
+                sort: cfg.sort.unwrap_or(defaults.sort),
             },
         }
     }
