@@ -1192,6 +1192,7 @@ fn postprocess_remaps_range_spanning_removed_blank() {
         entry_index: 0,
         start_line: 0,
         end_line: 3,
+        user_prompt: false,
     }];
     postprocess_blank_lines(&mut lines, &mut messages);
 
@@ -1216,6 +1217,7 @@ fn postprocess_clamps_range_ending_on_removed_blank() {
         entry_index: 0,
         start_line: 0,
         end_line: 2,
+        user_prompt: false,
     }];
     postprocess_blank_lines(&mut lines, &mut messages);
 
@@ -1242,11 +1244,13 @@ fn postprocess_remaps_first_message_adjacent_to_removed_blank() {
             entry_index: 0,
             start_line: 0,
             end_line: 1,
+            user_prompt: false,
         },
         MessageRange {
             entry_index: 1,
             start_line: 3,
             end_line: 4,
+            user_prompt: false,
         },
     ];
     postprocess_blank_lines(&mut lines, &mut messages);
@@ -1266,6 +1270,7 @@ fn postprocess_handles_trailing_blanks() {
         entry_index: 0,
         start_line: 0,
         end_line: 1,
+        user_prompt: false,
     }];
     postprocess_blank_lines(&mut lines, &mut messages);
 
@@ -1282,6 +1287,7 @@ fn postprocess_drops_empty_range_collapsed_to_zero() {
         entry_index: 0,
         start_line: 1,
         end_line: 2,
+        user_prompt: false,
     }];
     postprocess_blank_lines(&mut lines, &mut messages);
 
@@ -1444,13 +1450,28 @@ fn skill_marker_user_message_renders_dimmed_but_top_level() {
     let rendered =
         render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
     let line = &rendered.lines[0];
-    let name_text = format!("{:>width$}", "You", width = NAME_WIDTH);
+    let name_text = format!("{:>width$}", "Skill", width = NAME_WIDTH);
     let style = line_style_at(line, &name_text);
 
-    // Skill messages keep the "You" label (not ↳…), but render
-    // dimmed without bold.
+    // Skill bodies are labelled as a skill (not ↳… and not "You", since
+    // the user did not type them) and render dimmed without bold.
     assert!(style.dimmed);
     assert!(!style.bold);
+}
+
+#[test]
+fn injected_user_side_text_is_labelled_system() {
+    let entries = vec![RenderableEntry {
+        entry_index: 0,
+        entry: serde_json::from_str(
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"working directory changed"}}"#,
+        )
+        .unwrap(),
+    }];
+    let rendered =
+        render_parsed_conversation(&entries, &test_render_options(ToolDisplayMode::Hidden));
+    let name_text = format!("{:>width$}", "System", width = NAME_WIDTH);
+    assert!(line_style_at(&rendered.lines[0], &name_text).dimmed);
 }
 
 #[test]

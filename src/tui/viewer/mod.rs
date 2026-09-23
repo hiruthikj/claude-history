@@ -112,6 +112,9 @@ pub struct MessageRange {
     pub start_line: usize,
     /// End line in rendered output (exclusive, excludes trailing blank)
     pub end_line: usize,
+    /// A prompt the user typed (not a tool result, subagent turn or
+    /// assistant reply); `{`/`}` step between these.
+    pub user_prompt: bool,
 }
 
 /// Result of rendering a conversation
@@ -286,9 +289,10 @@ fn render_entry_with_range(
     if !is_message {
         return;
     }
-    if let Some(range) =
+    if let Some(mut range) =
         message_range_excluding_trailing_blank(lines, start_line, end_line, entry_index)
     {
+        range.user_prompt = is_user_prompt(entry);
         messages.push(range);
     }
 }
@@ -316,7 +320,28 @@ fn message_range_excluding_trailing_blank(
         entry_index,
         start_line,
         end_line: effective_end,
+        user_prompt: false,
     })
+}
+
+/// A top-level user entry that the user wrote: not injected (`isMeta`) and
+/// not only tool results.
+fn is_user_prompt(entry: &LogEntry) -> bool {
+    let LogEntry::User {
+        message,
+        parent_tool_use_id: None,
+        is_meta: false,
+        ..
+    } = entry
+    else {
+        return false;
+    };
+    match &message.content {
+        crate::claude::UserContent::Blocks(blocks) => !blocks
+            .iter()
+            .all(|block| matches!(block, crate::claude::ContentBlock::ToolResult { .. })),
+        _ => true,
+    }
 }
 
 /// Collapse consecutive blank rendered lines and remap message ranges so

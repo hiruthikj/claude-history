@@ -372,6 +372,33 @@ impl App {
         }
     }
 
+    /// Step to the next (or previous) prompt the user typed, skipping tool
+    /// summaries and replies. Stays put at the last one.
+    pub(super) fn focus_adjacent_prompt(&mut self, forward: bool, viewport_height: usize) {
+        if let AppMode::View(ref mut state) = self.app_mode {
+            if !state.message_ranges.iter().any(|range| range.user_prompt) {
+                return;
+            }
+            if !state.message_nav_active {
+                state.message_nav_active = true;
+                Self::sync_focus_to_scroll(state, viewport_height);
+            }
+            let current = state.focused_message;
+            let is_prompt = |index: &usize| state.message_ranges[*index].user_prompt;
+            let target = if forward {
+                let from = current.map_or(0, |index| index + 1);
+                (from..state.message_ranges.len()).find(is_prompt)
+            } else {
+                let to = current.unwrap_or(0);
+                (0..to).rev().find(is_prompt)
+            };
+            if let Some(target) = target {
+                state.focused_message = Some(target);
+                Self::ensure_message_visible(state, viewport_height);
+            }
+        }
+    }
+
     fn focus_message_at_line(state: &mut ViewState, line_idx: usize) {
         let found = state
             .message_ranges

@@ -37,7 +37,10 @@
 - Loading, agent search and opening a conversation spend 30–45% less CPU:
   Claude transcripts are no longer fully parsed a second time to rule out
   the Pi/OMP format
-- `[display] theme = "dark" | "light" forces a palette when terminal
+- The viewer's `}` / `{` jump between the prompts you typed, skipping tool
+  calls, replies and injected text; skill bodies and other text Claude Code
+  injects are labelled `Skill` / `System` instead of `You`
+- `[display] theme = "dark" | "light"` forces a palette when terminal
   detection guesses wrong
 - `--generate-semantic-cache` rejects `--local`, which would have left other
   projects' embeddings evictable

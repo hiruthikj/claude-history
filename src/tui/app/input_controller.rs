@@ -235,6 +235,14 @@ impl App {
                 self.focus_prev_message(viewport_height);
                 None
             }
+            KeyCode::Char('}') => {
+                self.focus_adjacent_prompt(true, viewport_height);
+                None
+            }
+            KeyCode::Char('{') => {
+                self.focus_adjacent_prompt(false, viewport_height);
+                None
+            }
             KeyCode::Char('d') if !modifiers.contains(KeyModifiers::CONTROL) => {
                 state.scroll_offset = (state.scroll_offset + viewport_height / 2).min(max_scroll);
                 self.sync_focus_after_scroll(viewport_height);

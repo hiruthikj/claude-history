@@ -424,6 +424,7 @@ pub(super) fn flush_tool_summary(
             entry_index: pending.first_entry_index,
             start_line,
             end_line,
+            user_prompt: false,
         });
         lines.push(RenderedLine::new(vec![]));
     }

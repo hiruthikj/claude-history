@@ -821,6 +821,7 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
     } else {
         hints.extend([
             hint(1, false, "/".into(), "search".into()),
+            hint(4, false, "{ }".into(), "prompt".into()),
             hint(4, false, "e".into(), "export".into()),
             hint(4, false, "y".into(), "yank".into()),
             hint(2, false, app.keys().resume.short_label(), "resume".into()),
@@ -1330,6 +1331,7 @@ fn render_help_overlay(
             ("k / ↑".into(), "Scroll up"),
             ("J / ]".into(), "Next message"),
             ("K / [".into(), "Previous message"),
+            ("} / {".into(), "Next / prev prompt"),
             ("d / Ctrl+D".into(), "Half page down"),
             ("u / Ctrl+U".into(), "Half page up"),
             ("g / Home".into(), "Jump to top"),

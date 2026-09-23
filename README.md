@@ -215,6 +215,7 @@ search already active, so `n` / `N` step through the rest.
 | Mouse wheel    | Scroll the conversation                            |
 | `J` / `]`      | Jump to next message                               |
 | `K` / `[`      | Jump to previous message                           |
+| `}` / `{`      | Jump to next / previous prompt you typed           |
 | `d` / `Ctrl+D` | Half page down                                     |
 | `u` / `Ctrl+U` | Half page up                                       |
 | `Page Down`    | Full page down                                     |

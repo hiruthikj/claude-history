@@ -24,6 +24,10 @@ pub enum LogEntry {
         parent_tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TokenUsage>,
+        /// Claude Code's flag for text it injected on the user's side
+        /// (command caveats, system reminders, skill bodies).
+        #[serde(default, rename = "isMeta", skip_serializing_if = "std::ops::Not::not")]
+        is_meta: bool,
     },
     Assistant {
         message: AssistantMessage,

@@ -72,13 +72,14 @@ pub(super) fn render_entry(
             message,
             timestamp,
             parent_tool_use_id,
+            is_meta,
             ..
         } => {
             if parent_tool_use_id.is_some() && !options.show_thinking {
                 return;
             }
             let parent_id = parent_tool_use_id.as_deref();
-            let style = MessageStyle::for_user(parent_id, &message.content);
+            let style = MessageStyle::for_user(parent_id, &message.content, *is_meta);
             let ctx = EntryCtx {
                 style,
                 parent_id,
@@ -143,7 +144,7 @@ struct MessageStyle<'a> {
 }
 
 impl<'a> MessageStyle<'a> {
-    fn for_user(parent_id: Option<&'a str>, content: &UserContent) -> Self {
+    fn for_user(parent_id: Option<&'a str>, content: &UserContent, is_meta: bool) -> Self {
         if let Some(p) = parent_id {
             return Self {
                 label: Cow::Owned(subagent_label(p)),
@@ -160,11 +161,18 @@ impl<'a> MessageStyle<'a> {
                     if text.trim().starts_with("Base directory for this skill:"))
             }),
         };
+        // Text Claude Code injected on the user's side is not the user's.
+        let label = match (is_skill, is_meta) {
+            (true, _) => "Skill",
+            (false, true) => "System",
+            (false, false) => "You",
+        };
+        let quiet = is_skill || is_meta;
         Self {
-            label: Cow::Borrowed("You"),
+            label: Cow::Borrowed(label),
             label_color: th().text_primary,
-            dimmed: is_skill,
-            bold: !is_skill,
+            dimmed: quiet,
+            bold: !quiet,
             is_subagent: false,
         }
     }

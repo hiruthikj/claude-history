@@ -511,3 +511,61 @@ fn opening_without_a_matching_query_starts_at_the_top() {
     assert!(state.search_query.is_empty());
     assert_eq!(state.scroll_offset, 0);
 }
+
+#[test]
+fn braces_step_between_typed_prompts_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let records = [
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": "first prompt"}}),
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}),
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}),
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "a reply"}]}}),
+        serde_json::json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": "injected caveat"}}),
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": "second prompt"}}),
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "another reply"}]}}),
+    ];
+    let text = records.map(|record| record.to_string()).join("\n") + "\n";
+    std::fs::write(&path, text).unwrap();
+    let mut app = App::new(
+        vec![test_conversation(path, None)],
+        ToolDisplayMode::Truncated,
+        false,
+        KeyBindings::default(),
+        vec![],
+    );
+    app.selected = Some(0);
+    app.enter_view_mode(80);
+    let focused_text = |app: &App| {
+        let AppMode::View(state) = app.app_mode() else {
+            unreachable!()
+        };
+        let range = &state.message_ranges[state.focused_message.unwrap()];
+        state.rendered_lines[range.start_line..range.end_line]
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|(text, _)| text.as_str()))
+            .collect::<String>()
+    };
+
+    app.handle_key(KeyCode::Char('}'), KeyModifiers::SHIFT, 40);
+    assert!(
+        focused_text(&app).contains("second prompt"),
+        "{}",
+        focused_text(&app)
+    );
+    app.handle_key(KeyCode::Char('}'), KeyModifiers::SHIFT, 40);
+    assert!(
+        focused_text(&app).contains("second prompt"),
+        "stays on the last prompt"
+    );
+    app.handle_key(KeyCode::Char('{'), KeyModifiers::SHIFT, 40);
+    assert!(
+        focused_text(&app).contains("first prompt"),
+        "{}",
+        focused_text(&app)
+    );
+}

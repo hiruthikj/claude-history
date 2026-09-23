@@ -69,12 +69,12 @@ fn may_be_session_header(parsed: &[(usize, Value)]) -> bool {
             .get(index)
             .map(|(_, value)| value.get("type").and_then(Value::as_str))
     };
-    match (record_type(0), record_type(1)) {
-        (None, _) => true,
-        (Some(Some("session")), _) => true,
-        (Some(Some("title")), None | Some(Some("session"))) => true,
-        _ => false,
-    }
+    matches!(
+        (record_type(0), record_type(1)),
+        (None, _)
+            | (Some(Some("session")), _)
+            | (Some(Some("title")), None | Some(Some("session")))
+    )
 }
 
 fn parse_reader(
@@ -343,6 +343,7 @@ fn normalize_message(
             cwd: None,
             parent_tool_use_id: None,
             usage: None,
+            is_meta: false,
         }),
         "assistant" => Some(LogEntry::Assistant {
             agent: Some(
@@ -383,6 +384,7 @@ fn normalize_message(
             cwd: None,
             parent_tool_use_id: None,
             usage: object.get("usage").and_then(pi_usage),
+            is_meta: false,
         }),
         "bashExecution" => Some(LogEntry::User {
             message: UserMessage {
@@ -397,6 +399,7 @@ fn normalize_message(
             cwd: None,
             parent_tool_use_id: None,
             usage: None,
+            is_meta: false,
         }),
         "custom" | "hookMessage" => {
             if object.get("display").and_then(Value::as_bool) == Some(false) {
