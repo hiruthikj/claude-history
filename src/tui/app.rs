@@ -119,6 +119,8 @@ pub struct App {
     sources: crate::history::SourceSet,
     /// Index into `sources.roots()` the list is narrowed to (Shift+Tab)
     source_filter: Option<usize>,
+    /// Project name the list is narrowed to (`keys.project`).
+    project_filter: Option<String>,
 }
 
 struct AppParts {
@@ -186,6 +188,7 @@ impl App {
             multiple_sources,
             sources: crate::history::SourceSet::default(),
             source_filter: None,
+            project_filter: None,
         }
     }
 
@@ -253,14 +256,13 @@ impl App {
     ) -> Self {
         let searchable = search::precompute_search_text(&conversations);
         let excluded_projects = exclude_projects.into_iter().collect();
-        let filtered = list_state::filter_conversation_indices(
-            0..conversations.len(),
-            &conversations,
-            &excluded_projects,
-            false,
-            None,
-            None,
-        );
+        let filtered = list_state::ListScope {
+            excluded_projects: &excluded_projects,
+            workspace: None,
+            source: None,
+            project: None,
+        }
+        .filter(0..conversations.len(), &conversations);
         let selected = if filtered.is_empty() { None } else { Some(0) };
         let (search_tx, search_rx) = spawn_search_worker();
         let conversations_snapshot = Self::conversation_snapshot(&conversations);
@@ -513,6 +515,10 @@ impl App {
 
     /// Label of the source the list is narrowed to; `None` means all. Only
     /// meaningful when [`Self::has_source_choice`].
+    pub fn project_filter(&self) -> Option<&str> {
+        self.project_filter.as_deref()
+    }
+
     pub fn source_filter_label(&self) -> Option<&str> {
         self.source_filter_root().map(|root| root.label())
     }

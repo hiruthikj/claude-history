@@ -279,6 +279,7 @@ pub struct KeysConfig {
     pub rename: Option<KeyBinding>,
     pub delete: Option<KeyBinding>,
     pub sort: Option<KeyBinding>,
+    pub project: Option<KeyBinding>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,6 +380,8 @@ pub struct KeyBindings {
     pub rename: KeyBinding,
     pub delete: KeyBinding,
     pub sort: KeyBinding,
+    /// Narrow the list to the selected row's project.
+    pub project: KeyBinding,
 }
 
 impl Default for KeyBindings {
@@ -404,6 +407,10 @@ impl Default for KeyBindings {
                 code: KeyCode::Char('s'),
                 modifiers: KeyModifiers::ALT,
             },
+            project: KeyBinding {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::ALT,
+            },
         }
     }
 }
@@ -419,6 +426,7 @@ impl KeyBindings {
                 rename: cfg.rename.unwrap_or(defaults.rename),
                 delete: cfg.delete.unwrap_or(defaults.delete),
                 sort: cfg.sort.unwrap_or(defaults.sort),
+                project: cfg.project.unwrap_or(defaults.project),
             },
         }
     }

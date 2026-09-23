@@ -8,14 +8,20 @@ impl App {
     where
         I: IntoIterator<Item = usize>,
     {
-        filter_conversation_indices(
-            indices,
-            &self.conversations,
-            &self.excluded_projects,
-            self.workspace_filter,
-            self.current_project_dir_name.as_deref(),
-            self.source_filter_root(),
-        )
+        self.list_scope().filter(indices, &self.conversations)
+    }
+
+    /// Everything that narrows the list besides the query.
+    pub(super) fn list_scope(&self) -> ListScope<'_> {
+        ListScope {
+            excluded_projects: &self.excluded_projects,
+            workspace: self
+                .current_project_dir_name
+                .as_deref()
+                .filter(|_| self.workspace_filter),
+            source: self.source_filter_root(),
+            project: self.project_filter.as_deref(),
+        }
     }
 
     /// The root the list is narrowed to, if any.
@@ -183,60 +189,83 @@ impl App {
     }
 }
 
-pub(super) fn filter_conversation_indices<I>(
-    indices: I,
-    conversations: &[Conversation],
-    excluded_projects: &HashSet<String>,
-    workspace_filter: bool,
-    current_project_dir_name: Option<&str>,
-    source_filter: Option<&crate::history::SourceRoot>,
-) -> Vec<usize>
-where
-    I: IntoIterator<Item = usize>,
-{
-    indices
-        .into_iter()
-        .filter(|&idx| {
-            source_filter.is_none_or(|root| {
-                conversations[idx]
-                    .origin
-                    .as_deref()
-                    .is_some_and(|origin| std::ptr::eq(origin, root))
-            })
-        })
-        .filter(|&idx| {
-            conversations[idx]
-                .project_name
+/// What narrows the list besides the query: excluded projects, the cwd's
+/// workspace (Tab), one source (Shift+Tab) and one project.
+#[derive(Clone, Copy)]
+pub(super) struct ListScope<'a> {
+    pub excluded_projects: &'a HashSet<String>,
+    /// Encoded Claude project dir of the cwd, when narrowed to it.
+    pub workspace: Option<&'a str>,
+    pub source: Option<&'a crate::history::SourceRoot>,
+    /// A project name, when narrowed to one.
+    pub project: Option<&'a str>,
+}
+
+impl ListScope<'_> {
+    pub(super) fn filter<I>(&self, indices: I, conversations: &[Conversation]) -> Vec<usize>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        // Resolved at most once per pass, and only if a Pi/OMP row needs it.
+        let current_dir = std::cell::OnceCell::new();
+        indices
+            .into_iter()
+            .filter(|&idx| self.admits(&conversations[idx], &current_dir))
+            .collect()
+    }
+
+    fn admits(
+        &self,
+        conversation: &Conversation,
+        current_dir: &std::cell::OnceCell<Option<PathBuf>>,
+    ) -> bool {
+        if let Some(root) = self.source
+            && !conversation
+                .origin
                 .as_deref()
-                .is_none_or(|name| !project_is_excluded(name, excluded_projects))
-        })
-        .filter(|&idx| {
-            let Some(project_dir_name) = current_project_dir_name.filter(|_| workspace_filter)
-            else {
-                return true;
+                .is_some_and(|origin| std::ptr::eq(origin, root))
+        {
+            return false;
+        }
+        if conversation
+            .project_name
+            .as_deref()
+            .is_some_and(|name| project_is_excluded(name, self.excluded_projects))
+        {
+            return false;
+        }
+        if let Some(project) = self.project
+            && conversation.project_name.as_deref() != Some(project)
+        {
+            return false;
+        }
+        let Some(project_dir_name) = self.workspace else {
+            return true;
+        };
+        if conversation.source != crate::history::Source::Claude {
+            let current = current_dir.get_or_init(|| {
+                let current = std::env::current_dir().ok()?;
+                Some(current.canonicalize().unwrap_or(current))
+            });
+            let Some(current) = current else {
+                return false;
             };
-            if conversations[idx].source != crate::history::Source::Claude {
-                let Ok(current) = std::env::current_dir() else {
-                    return false;
-                };
-                let current = current.canonicalize().unwrap_or(current);
-                return conversations[idx]
-                    .project_path
-                    .as_ref()
-                    .or(conversations[idx].cwd.as_ref())
-                    .is_some_and(|path| {
-                        path.canonicalize().unwrap_or_else(|_| path.clone()) == current
-                    });
-            }
-            conversations[idx]
-                .path
-                .parent()
-                .and_then(|p| p.file_name())
-                .is_some_and(|name| {
-                    crate::history::path::is_same_project(&name.to_string_lossy(), project_dir_name)
-                })
-        })
-        .collect()
+            return conversation
+                .project_path
+                .as_ref()
+                .or(conversation.cwd.as_ref())
+                .is_some_and(|path| {
+                    path.canonicalize().unwrap_or_else(|_| path.clone()) == *current
+                });
+        }
+        conversation
+            .path
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|name| {
+                crate::history::path::is_same_project(&name.to_string_lossy(), project_dir_name)
+            })
+    }
 }
 
 fn project_is_excluded(project_name: &str, excluded_projects: &HashSet<String>) -> bool {

@@ -295,6 +295,14 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             label.is_some(),
         ));
     }
+    let project = app.project_filter();
+    states.push(toggle(
+        if project.is_some() { 2 } else { 6 },
+        keys.project.short_label(),
+        "project",
+        project.map_or("all".to_string(), |name| simple_truncate(name, 20)),
+        project.is_some(),
+    ));
     if app.semantic_toggle_available() {
         let semantic = app.list_search_mode() == ListSearchMode::Semantic;
         states.push(toggle(
@@ -1364,6 +1372,7 @@ fn render_help_overlay(
             ("Tab".into(), "Toggle scope (All/Project)"),
             ("Shift+Tab".into(), "Cycle source (when several)"),
             (keys.sort.help_label(), "Sort: best match / newest"),
+            (keys.project.help_label(), "Only this row's project"),
             ("Enter".into(), "Open viewer"),
             ("Ctrl+O".into(), "Select and exit"),
             ("Ctrl+W".into(), "Delete word"),

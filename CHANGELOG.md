@@ -41,6 +41,8 @@
 - The viewer's `}` / `{` jump between the prompts you typed, skipping tool
   calls, replies and injected text; skill bodies and other text Claude Code
   injects are labelled `Skill` / `System` instead of `You`
+- `Alt+P` (`[keys].project`) narrows the list to the selected row's project
+  and back
 - `[display] theme = "dark" | "light"` forces a palette when terminal
   detection guesses wrong
 - `--generate-semantic-cache` rejects `--local`, which would have left other

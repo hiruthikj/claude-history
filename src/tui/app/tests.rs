@@ -1950,3 +1950,35 @@ fn single_file_mode_has_no_project_exclusions() {
     assert!(app.excluded_projects.is_empty());
     assert!(app.is_single_file_mode());
 }
+
+#[test]
+fn project_key_narrows_to_the_selected_rows_project_and_back() {
+    let mut conversations = sort_conversations();
+    conversations[1].project_name = Some("other".to_string());
+    let mut app = app(conversations, vec![]);
+    app.update_filter();
+    assert_eq!(app.filtered().len(), 2);
+    let selected_project = app.conversations()[app.filtered()[app.selected.unwrap()]]
+        .project_name
+        .clone()
+        .unwrap();
+
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::ALT, 10);
+    assert_eq!(app.project_filter(), Some(selected_project.as_str()));
+    assert!(
+        app.filtered()
+            .iter()
+            .all(|&index| app.conversations()[index].project_name.as_deref()
+                == Some(selected_project.as_str()))
+    );
+    assert_eq!(app.filtered().len(), 1);
+
+    // Typing a query searches within the project.
+    app.query = "config".to_string();
+    app.update_filter();
+    assert_eq!(app.filtered().len(), 1);
+
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::ALT, 10);
+    assert_eq!(app.project_filter(), None);
+    assert_eq!(app.filtered().len(), 2);
+}

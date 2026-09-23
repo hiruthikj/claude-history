@@ -526,13 +526,38 @@ impl App {
     pub(super) fn toggle_workspace_filter(&mut self) {
         if self.current_project_dir_name.is_some() {
             self.workspace_filter = !self.workspace_filter;
-            self.semantic_sent_scope_signature = None;
-            self.invalidate_search_generation();
-            if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
-                self.dispatch_search();
-            } else {
-                self.update_filter();
+            self.apply_scope_change();
+        }
+    }
+
+    /// Narrows the list to the selected row's project, or clears that.
+    pub(super) fn toggle_project_filter(&mut self) {
+        self.project_filter = match self.project_filter {
+            Some(_) => None,
+            None => {
+                let Some(project) = self
+                    .selected
+                    .and_then(|selected| self.filtered.get(selected))
+                    .and_then(|&index| self.conversations[index].project_name.clone())
+                else {
+                    return;
+                };
+                Some(project)
             }
+        };
+        self.apply_scope_change();
+    }
+
+    /// Re-runs the current search after anything in [`ListScope`] changed.
+    ///
+    /// [`ListScope`]: super::list_state::ListScope
+    fn apply_scope_change(&mut self) {
+        self.semantic_sent_scope_signature = None;
+        self.invalidate_search_generation();
+        if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
+            self.dispatch_search();
+        } else {
+            self.update_filter();
         }
     }
 
@@ -547,13 +572,7 @@ impl App {
             None => populated.first().copied(),
             Some(current) => populated.iter().copied().find(|&index| index > current),
         };
-        self.semantic_sent_scope_signature = None;
-        self.invalidate_search_generation();
-        if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
-            self.dispatch_search();
-        } else {
-            self.update_filter();
-        }
+        self.apply_scope_change();
     }
 
     pub(super) fn toggle_list_search_mode(&mut self) {

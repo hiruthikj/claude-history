@@ -465,6 +465,10 @@ impl App {
             self.toggle_list_sort();
             return None;
         }
+        if self.keys.project.matches(code, modifiers) {
+            self.toggle_project_filter();
+            return None;
+        }
 
         match code {
             _ if self.keys.rename.matches(code, modifiers) => {

@@ -199,6 +199,7 @@ JSONL files and their matching session artifact directories.
 | `Ctrl+T`                | Toggle lexical / semantic search |
 | `Ctrl+S`                | Semantic details for the hit     |
 | `Alt+S`                 | Sort by best match / newest      |
+| `Alt+P`                 | Only the selected row's project  |
 | `?`                     | Show keyboard shortcuts          |
 | `Esc`                   | Clear search input, or quit      |
 | `Ctrl+C`                | Quit                             |
@@ -682,6 +683,7 @@ pager = true
 # rename = "alt+r"
 # fork = "alt+f"
 # sort = "alt+o"   # flip best match / newest in the list
+# project = "alt+j" # only the selected row's project (default: alt+p)
 
 [search]
 # Search mode used by the conversation list
