@@ -236,6 +236,13 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
   `prepare_list_rows`, keeping the previous set while a lexical search is in
   flight; `ui::render_list` only styles. Rows without semantic metadata show
   lexical hidden-context in both modes.
+- Both status bars are lists of `ui::Hint`s (priority, side, spans) laid out
+  by `render_hint_bar`: `fit_hints` drops whole hints, highest priority number
+  first, so a narrow terminal never shows a cut-off label. Add a hint there
+  rather than pushing spans onto the line.
+- Opening a list hit seeds the viewer search from the list query
+  (`view_state.rs::seed_view_search_from_list_query`): quoted literal, then
+  the whole unquoted query, then its longest word.
 - Streaming load: batches arrive over a channel and are appended, but search
   text is only precomputed and search re-dispatched at `finish_loading`.
 - Lexical and semantic workers are threads with generation counters. Any

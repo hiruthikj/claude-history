@@ -55,10 +55,52 @@ impl App {
                     expanded_tool_outputs: BTreeSet::new(),
                     hovered_tool_output: None,
                 });
+                self.seed_view_search_from_list_query();
             }
             Err(e) => {
                 self.status_message =
                     Some((format!("Failed to open: {}", e), std::time::Instant::now()));
+            }
+        }
+    }
+
+    /// Opening a search hit lands on the first place it matched: the list
+    /// query becomes an active viewer search (so `n`/`N` step through the
+    /// rest). A quoted phrase is the most specific needle, then the whole
+    /// query, then its longest word. With no match on screen (e.g. the hit
+    /// is inside collapsed tool output) the viewer opens at the top.
+    fn seed_view_search_from_list_query(&mut self) {
+        let parsed = crate::search::query::ParsedQuery::parse(self.query.trim());
+        if parsed.is_effectively_empty() || crate::search::is_uuid(self.query.trim()) {
+            return;
+        }
+        let mut needles = parsed
+            .literals()
+            .iter()
+            .map(|literal| literal.text().to_string())
+            .collect::<Vec<_>>();
+        let unquoted = parsed.unquoted().trim().to_string();
+        if !unquoted.is_empty() {
+            needles.push(unquoted.clone());
+            if let Some(word) = unquoted
+                .split_whitespace()
+                .filter(|word| word.chars().count() >= 3)
+                .max_by_key(|word| word.chars().count())
+            {
+                needles.push(word.to_string());
+            }
+        }
+        for needle in needles {
+            if let AppMode::View(ref mut state) = self.app_mode {
+                state.search_query = needle;
+            }
+            self.update_search_results();
+            if let AppMode::View(ref mut state) = self.app_mode {
+                if !state.search_matches.is_empty() {
+                    state.search_mode = ViewSearchMode::Active;
+                    return;
+                }
+                state.search_query.clear();
             }
         }
     }

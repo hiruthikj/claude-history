@@ -151,12 +151,12 @@ impl ListSearchMode {
     }
 }
 
-pub const LIST_LINES_PER_ITEM: usize = 3;
+pub const LIST_LINES_PER_ITEM: usize = 2;
 
 pub fn list_lines_per_item(_mode: ListSearchMode, query: &str) -> usize {
     let parsed = ParsedQuery::parse(query);
     if !parsed.literals().is_empty() {
-        4
+        3
     } else {
         LIST_LINES_PER_ITEM
     }

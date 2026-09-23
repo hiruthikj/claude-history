@@ -194,12 +194,17 @@ JSONL files and their matching session artifact directories.
 | `F2`                    | Rename selected session          |
 | `Ctrl+X`                | Delete conversation              |
 | `Tab`                   | Toggle all / workspace scope     |
+| `Shift+Tab`             | Cycle sources (when several)     |
 | `Ctrl+T`                | Toggle lexical / semantic search |
+| `Alt+S`                 | Sort by best match / newest      |
 | `?`                     | Show keyboard shortcuts          |
 | `Esc`                   | Clear search input, or quit      |
 | `Ctrl+C`                | Quit                             |
 
 ### Keyboard navigation (Viewer mode)
+
+Opening a conversation from a search starts at its first match with the
+search already active, so `n` / `N` step through the rest.
 
 | Key            | Action                                             |
 | -------------- | -------------------------------------------------- |
@@ -217,7 +222,7 @@ JSONL files and their matching session artifact directories.
 | `/`            | Start search                                       |
 | `n`            | Next search match                                  |
 | `N`            | Previous search match                              |
-| `t`            | Cycle tools: summary/truncated/full                |
+| `t`            | Cycle tools: summary/short/full                    |
 | `T`            | Toggle thinking                                    |
 | `e`            | Export conversation to file                        |
 | `y`            | Copy to clipboard (message if selected, else menu) |

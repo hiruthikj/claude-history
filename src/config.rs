@@ -282,9 +282,9 @@ impl KeyBinding {
         self.code == code && self.modifiers == modifiers
     }
 
-    /// Format for status bar display (e.g. "^F", "M-F", "F2")
+    /// Format for status bar display (e.g. "^F", "Alt+F", "F2")
     pub fn short_label(&self) -> String {
-        self.format_label("^", "M-")
+        self.format_label("^", "Alt+")
     }
 
     /// Format for help overlay (e.g. "Ctrl+F", "Alt+F", "F2")

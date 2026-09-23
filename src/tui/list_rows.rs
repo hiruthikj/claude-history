@@ -67,6 +67,8 @@ pub enum Recency {
 pub struct ListRow {
     /// Project name, prefixed with the source label in a mixed corpus.
     pub project: String,
+    /// Bytes of `project` that are the source label (styled as a badge).
+    pub badge_len: usize,
     /// " · title", when the session was renamed and there is room.
     pub custom_title: Option<String>,
     /// " · summary", when the transcript has one and there is room.
@@ -124,13 +126,7 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     } else {
         format!("{} msgs", conv.message_count)
     };
-    let duration = conv.duration_minutes.map(|m| {
-        if m >= 60 {
-            format!("{}h {}m", m / 60, m % 60)
-        } else {
-            format!("{}m", m)
-        }
-    });
+    let duration = conv.duration_minutes.map(format_duration);
     let semantic_meta = (source.semantic_mode && width >= 70)
         .then(|| source.semantic.map(semantic_row_metadata))
         .flatten();
@@ -141,19 +137,19 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     let indicator_len = INDICATOR.width();
     let left_budget = width.saturating_sub(indicator_len + right_len + MIN_PADDING);
 
+    let badge = source.multiple_sources.then(|| {
+        let label = conv
+            .origin
+            .as_deref()
+            .map_or(conv.source.list_label(), |origin| origin.label());
+        format!("{label:<3}")
+    });
     let raw_project = conv
         .project_name
         .as_ref()
-        .map(|name| {
-            if source.multiple_sources {
-                let label = conv
-                    .origin
-                    .as_deref()
-                    .map_or(conv.source.list_label(), |origin| origin.label());
-                format!("{label:<3} · {name}")
-            } else {
-                name.to_string()
-            }
+        .map(|name| match &badge {
+            Some(badge) => format!("{badge} · {name}"),
+            None => name.to_string(),
         })
         .unwrap_or_default();
     let has_title_or_summary = conv.custom_title.as_ref().is_some_and(|s| !s.is_empty())
@@ -170,6 +166,13 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
         .min(left_budget.saturating_sub(reserved_left_detail));
     let project = simple_truncate(&raw_project, project_budget);
     let project_len = project.width();
+    let badge_len = badge.map_or(0, |badge| {
+        if project.starts_with(&badge) {
+            badge.len()
+        } else {
+            0
+        }
+    });
 
     let title_budget = left_budget.saturating_sub(project_len + 3);
     let custom_title = conv
@@ -214,6 +217,7 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
 
     ListRow {
         project,
+        badge_len,
         custom_title,
         summary,
         padding,
@@ -278,6 +282,19 @@ fn semantic_row_metadata(metadata: &SemanticResultMetadata) -> String {
 
 /// Relative time for recent entries, absolute for older ones, with a
 /// recency grade for colouring.
+/// Session span at a glance: `45m`, `2h 5m`, `3h`, `8d 1h`. Minutes stop
+/// mattering past a day, and `193h 15m` is not readable at a glance.
+pub fn format_duration(minutes: u64) -> String {
+    let (days, hours, mins) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
+    match (days, hours, mins) {
+        (0, 0, m) => format!("{m}m"),
+        (0, h, 0) => format!("{h}h"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, 0, _) => format!("{d}d"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
 pub fn format_timestamp(timestamp: DateTime<Local>, now: DateTime<Local>) -> (String, Recency) {
     let age = now.signed_duration_since(timestamp);
 
@@ -321,6 +338,16 @@ pub fn format_timestamp(timestamp: DateTime<Local>, now: DateTime<Local>) -> (St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_read_at_a_glance() {
+        assert_eq!(format_duration(0), "0m");
+        assert_eq!(format_duration(45), "45m");
+        assert_eq!(format_duration(125), "2h 5m");
+        assert_eq!(format_duration(180), "3h");
+        assert_eq!(format_duration(193 * 60 + 15), "8d 1h");
+        assert_eq!(format_duration(2 * 1440 + 30), "2d");
+    }
     use crate::history::{MessageRange, Source};
     use crate::semantic::types::{
         SemanticChunkIdentity, SemanticChunkSource, SemanticExplanation, SemanticQuality,

@@ -87,9 +87,9 @@ impl ToolDisplayMode {
     /// Fixed-width label for the status bar (3 chars each)
     pub fn status_label(self) -> &'static str {
         match self {
-            Self::Hidden => "sum",
-            Self::Truncated => "trn",
-            Self::Full => "all",
+            Self::Hidden => "summary",
+            Self::Truncated => "short",
+            Self::Full => "full",
         }
     }
 }

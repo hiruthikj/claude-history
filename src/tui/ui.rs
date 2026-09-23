@@ -7,7 +7,8 @@ use crate::tui::app::{
 };
 use crate::tui::list_layout::{self, ListLayout};
 use crate::tui::list_rows::{
-    INDICATOR, ListRow, Recency, RowSource, project_row, row_evidence, semantic_rationale_label,
+    INDICATOR, ListRow, Recency, RowSource, format_duration, project_row, row_evidence,
+    semantic_rationale_label,
 };
 #[cfg(test)]
 use crate::tui::snippet::fit_around_matches;
@@ -181,11 +182,55 @@ fn render_activity_status(frame: &mut Frame, msg: &str, area: Rect) {
     frame.render_widget(status, area);
 }
 
+/// One status-bar hint: a key and what it does, or a key and the state it
+/// toggles. `priority` orders what survives a narrow terminal (lower stays).
+struct Hint {
+    priority: u8,
+    /// State toggles sit at the right edge, actions at the left.
+    right: bool,
+    spans: Vec<Span<'static>>,
+}
+
+impl Hint {
+    fn width(&self) -> usize {
+        self.spans
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum()
+    }
+}
+
+const HINT_GAP: usize = 2;
+
+/// Drops the highest-priority hints until the rest fit `width`, keeping the
+/// original order of what remains.
+fn fit_hints(mut hints: Vec<Hint>, width: usize) -> Vec<Hint> {
+    let total = |hints: &[Hint]| {
+        hints.iter().map(Hint::width).sum::<usize>() + HINT_GAP * hints.len().saturating_sub(1)
+    };
+    while total(&hints) > width {
+        let Some(drop) = hints
+            .iter()
+            .enumerate()
+            .max_by_key(|(index, hint)| (hint.priority, *index))
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
+        hints.remove(drop);
+    }
+    hints
+}
+
+/// Actions on the left, the list's toggled state on the right; when the
+/// terminal is narrow the least useful hints go first rather than the line
+/// being cut off mid-word.
 fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let is_loading = app.is_loading();
 
     let key_style = Style::default().fg(rgb(th().accent));
     let label_style = Style::default().fg(rgb(th().text_muted));
+    let active_style = Style::default().fg(rgb(th().accent)).bold();
     // Dimmed styles for unavailable shortcuts during loading
     let dim_key_style = Style::default().fg(rgb(th().dim_key));
     let dim_label_style = Style::default().fg(rgb(th().dim_label));
@@ -200,86 +245,84 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (key_style, label_style)
     };
+    let action = |priority: u8, key: String, label: &'static str| Hint {
+        priority,
+        right: false,
+        spans: vec![
+            Span::styled(key, action_key),
+            Span::styled(format!(" {label}"), action_label),
+        ],
+    };
+    // `active` marks a non-default state, drawn in the accent.
+    let toggle =
+        |priority: u8, key: String, name: &'static str, value: String, active: bool| Hint {
+            priority,
+            right: true,
+            spans: vec![
+                Span::styled(key, key_style),
+                Span::styled(format!(" {name}\u{b7}"), label_style),
+                Span::styled(value, if active { active_style } else { label_style }),
+            ],
+        };
 
     let keys = app.keys();
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled("Enter", action_key),
-        Span::styled(" open  ", action_label),
-        Span::styled(keys.resume.short_label(), action_key),
-        Span::styled(" resume  ", action_label),
-        Span::styled(keys.fork.short_label(), action_key),
-        Span::styled(" fork  ", action_label),
-        Span::styled(keys.rename.short_label(), action_key),
-        Span::styled(" rename  ", action_label),
-        Span::styled(keys.delete.short_label(), action_key),
-        Span::styled(" delete  ", action_label),
+    let actions = vec![
+        action(1, "Enter".to_string(), "open"),
+        action(2, keys.resume.short_label(), "resume"),
+        action(5, keys.fork.short_label(), "fork"),
+        action(7, keys.rename.short_label(), "rename"),
+        action(6, keys.delete.short_label(), "delete"),
     ];
 
-    // Scope toggle (only when project context exists)
+    let mut states = Vec::new();
     if app.has_project_context() {
-        let scope_label = if app.workspace_filter() { "Prj" } else { "All" };
-        let scope_val_style = if app.workspace_filter() {
-            Style::default().fg(rgb(th().accent)).bold()
-        } else {
-            label_style
-        };
-        spans.extend([
-            Span::styled("Tab", key_style),
-            Span::styled("\u{b7}", label_style),
-            Span::styled(scope_label, scope_val_style),
-            Span::raw("  "),
-        ]);
+        let project = app.workspace_filter();
+        states.push(toggle(
+            3,
+            "Tab".to_string(),
+            "scope",
+            if project { "project" } else { "all" }.to_string(),
+            project,
+        ));
     }
-
     if app.has_source_choice() {
-        let (source_label, source_style) = match app.source_filter_label() {
-            Some(label) => (label, Style::default().fg(rgb(th().accent)).bold()),
-            None => ("All", label_style),
-        };
-        spans.extend([
-            Span::styled("S-Tab", key_style),
-            Span::styled("\u{b7}", label_style),
-            Span::styled(source_label.to_string(), source_style),
-            Span::raw("  "),
-        ]);
+        let label = app.source_filter_label();
+        states.push(toggle(
+            3,
+            "S-Tab".to_string(),
+            "source",
+            label.unwrap_or("all").to_string(),
+            label.is_some(),
+        ));
     }
-
     if app.semantic_toggle_available() {
-        let mode_style = if app.list_search_mode() == ListSearchMode::Semantic {
-            Style::default().fg(rgb(th().accent)).bold()
-        } else {
-            label_style
-        };
-        spans.extend([
-            Span::styled("Ctrl+T", key_style),
-            Span::styled(" semantic·", label_style),
-            Span::styled(app.list_search_mode().label(), mode_style),
-            Span::raw("  "),
-        ]);
+        let semantic = app.list_search_mode() == ListSearchMode::Semantic;
+        states.push(toggle(
+            4,
+            "^T".to_string(),
+            "search",
+            app.list_search_mode().label().to_string(),
+            semantic,
+        ));
     }
+    let newest = app.list_sort() == SortMode::Recency;
+    states.push(toggle(
+        3,
+        keys.sort.short_label(),
+        "sort",
+        if newest { "newest" } else { "best" }.to_string(),
+        newest,
+    ));
+    states.push(Hint {
+        priority: 0,
+        right: true,
+        spans: vec![
+            Span::styled("?", key_style),
+            Span::styled(" help", label_style),
+        ],
+    });
 
-    let (sort_label, sort_style) = match app.list_sort() {
-        SortMode::Relevance => ("best", label_style),
-        SortMode::Recency => ("newest", Style::default().fg(rgb(th().accent)).bold()),
-    };
-    spans.extend([
-        Span::styled(keys.sort.short_label(), key_style),
-        Span::styled(" sort·", label_style),
-        Span::styled(sort_label, sort_style),
-        Span::raw("  "),
-    ]);
-
-    spans.extend([
-        Span::styled("?", key_style),
-        Span::styled("help  ", label_style),
-        Span::styled("Esc", key_style),
-        Span::styled(" quit", label_style),
-    ]);
-
-    let status_line = Line::from(spans);
-    let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
-    frame.render_widget(status, area);
+    render_hint_bar(frame, actions.into_iter().chain(states).collect(), area);
 }
 
 fn render_semantic_debug_popup(frame: &mut Frame, app: &App) {
@@ -411,14 +454,9 @@ fn header_fits_single_line(conv: &crate::history::Conversation, terminal_width: 
     let timestamp_len = 16;
 
     // Duration length (if present): " · Xm" or " · Xh Ym" etc.
-    let duration_len = conv.duration_minutes.map_or(0, |m| {
-        let formatted = if m >= 60 {
-            format!("{}h {}m", m / 60, m % 60)
-        } else {
-            format!("{}m", m)
-        };
-        3 + formatted.len() // " · " + duration
-    });
+    let duration_len = conv
+        .duration_minutes
+        .map_or(0, |m| 3 + format_duration(m).len()); // " · " + duration
 
     // Format: "  project · custom_title · model · msg_count · duration · tokens · timestamp · summary"
     let total_len = 2
@@ -538,13 +576,7 @@ fn render_view_header(frame: &mut Frame, app: &App, state: &ViewState, area: Rec
             format!("{} messages", conv.message_count)
         };
         // Format conversation duration
-        let duration = conv.duration_minutes.map(|m| {
-            if m >= 60 {
-                format!("{}h {}m", m / 60, m % 60)
-            } else {
-                format!("{}m", m)
-            }
-        });
+        let duration = conv.duration_minutes.map(format_duration);
 
         // Calculate header length to determine if long token format fits
         let custom_title_len = custom_title
@@ -817,67 +849,131 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
 
     let key_style = Style::default().fg(rgb(th().accent));
     let label_style = Style::default().fg(rgb(th().text_muted));
-
-    // Fixed-width status labels to prevent jumping when toggling
-    let tools_status = state.tool_display.status_label();
-    let thinking_status = if state.show_thinking { "on " } else { "off" };
-    let timing_status = if state.show_timing { "on " } else { "off" };
-
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled(scroll_pos, Style::default().fg(rgb(th().text_secondary))),
-        Span::raw("  "),
-        Span::styled("t", key_style),
-        Span::styled(format!("ools·{} ", tools_status), label_style),
-        Span::styled("T", key_style),
-        Span::styled(format!("hink·{} ", thinking_status), label_style),
-        Span::styled("i", key_style),
-        Span::styled(format!("nfo·{}", timing_status), label_style),
-        Span::raw("  "),
-        Span::styled("│", label_style),
-        Span::raw("  "),
-    ];
-
-    if state.search_mode == ViewSearchMode::Active && !state.search_matches.is_empty() {
-        spans.extend([
-            Span::styled("n", key_style),
-            Span::styled("ext  ", label_style),
-            Span::styled("N", key_style),
-            Span::styled("prev  ", label_style),
-            Span::styled(
-                format!(
-                    "{}/{}  ",
-                    state.current_match + 1,
-                    state.search_matches.len()
+    let active_style = Style::default().fg(rgb(th().accent)).bold();
+    let hint = |priority: u8, right: bool, key: String, label: String| Hint {
+        priority,
+        right,
+        spans: vec![
+            Span::styled(key, key_style),
+            Span::styled(format!(" {label}"), label_style),
+        ],
+    };
+    let toggle =
+        |priority: u8, key: &'static str, name: &'static str, value: &str, active: bool| Hint {
+            priority,
+            right: true,
+            spans: vec![
+                Span::styled(key, key_style),
+                Span::styled(format!(" {name}\u{b7}"), label_style),
+                Span::styled(
+                    value.trim().to_string(),
+                    if active { active_style } else { label_style },
                 ),
-                Style::default().fg(rgb(th().text_secondary)),
-            ),
-            Span::styled("Esc", key_style),
-            Span::styled(" clear", label_style),
-        ]);
+            ],
+        };
+
+    let mut hints = vec![Hint {
+        priority: 0,
+        right: false,
+        spans: vec![Span::styled(
+            scroll_pos,
+            Style::default().fg(rgb(th().text_secondary)),
+        )],
+    }];
+    if state.search_mode == ViewSearchMode::Active && !state.search_matches.is_empty() {
+        hints.push(Hint {
+            priority: 0,
+            right: false,
+            spans: vec![
+                Span::styled("n/N", key_style),
+                Span::styled(" match ", label_style),
+                Span::styled(
+                    format!("{}/{}", state.current_match + 1, state.search_matches.len()),
+                    active_style,
+                ),
+                Span::styled(
+                    format!(
+                        " \u{201c}{}\u{201d}",
+                        simple_truncate(&state.search_query, 24)
+                    ),
+                    label_style,
+                ),
+            ],
+        });
+        hints.push(hint(1, false, "Esc".into(), "clear".into()));
     } else {
-        spans.extend([
-            Span::styled("?", key_style),
-            Span::styled("help  ", label_style),
-            Span::styled("/", key_style),
-            Span::styled("search  ", label_style),
-            Span::styled("e", key_style),
-            Span::styled("xport  ", label_style),
-            Span::styled("y", key_style),
-            Span::styled("ank  ", label_style),
-            Span::styled(app.keys().resume.short_label(), key_style),
-            Span::styled(" resume  ", label_style),
-            Span::styled(app.keys().fork.short_label(), key_style),
-            Span::styled(" fork  ", label_style),
-            Span::styled(app.keys().delete.short_label(), key_style),
-            Span::styled(" del  ", label_style),
-            Span::styled("q", key_style),
-            Span::styled("uit", label_style),
+        hints.extend([
+            hint(1, false, "/".into(), "search".into()),
+            hint(4, false, "e".into(), "export".into()),
+            hint(4, false, "y".into(), "yank".into()),
+            hint(2, false, app.keys().resume.short_label(), "resume".into()),
+            hint(5, false, app.keys().fork.short_label(), "fork".into()),
+            hint(6, false, app.keys().delete.short_label(), "delete".into()),
+            hint(3, false, "q".into(), "back".into()),
         ]);
     }
+    let tools = state.tool_display.status_label();
+    hints.extend([
+        toggle(
+            3,
+            "t",
+            "tools",
+            tools,
+            state.tool_display != crate::tui::ToolDisplayMode::Hidden,
+        ),
+        toggle(
+            3,
+            "T",
+            "thinking",
+            if state.show_thinking { "on" } else { "off" },
+            state.show_thinking,
+        ),
+        toggle(
+            5,
+            "i",
+            "timing",
+            if state.show_timing { "on" } else { "off" },
+            state.show_timing,
+        ),
+        hint(0, true, "?".into(), "help".into()),
+    ]);
 
-    let status_line = Line::from(spans);
-    let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
+    render_hint_bar(frame, hints, area);
+}
+
+/// Lays hints out on one status line: left-side hints from the left edge,
+/// right-side ones against the right, dropping by priority to fit.
+fn render_hint_bar(frame: &mut Frame, hints: Vec<Hint>, area: Rect) {
+    let margin = 2;
+    let budget = (area.width as usize).saturating_sub(margin * 2 + HINT_GAP);
+    let (right, left): (Vec<_>, Vec<_>) = fit_hints(hints, budget)
+        .into_iter()
+        .partition(|hint| hint.right);
+    let join = |hints: Vec<Hint>| {
+        let mut spans = Vec::new();
+        for (index, hint) in hints.into_iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw(" ".repeat(HINT_GAP)));
+            }
+            spans.extend(hint.spans);
+        }
+        spans
+    };
+    let left = join(left);
+    let right = join(right);
+    let used: usize = left
+        .iter()
+        .chain(&right)
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    let padding = (area.width as usize).saturating_sub(used + margin * 2);
+
+    let mut spans = vec![Span::raw(" ".repeat(margin))];
+    spans.extend(left);
+    spans.push(Span::raw(" ".repeat(padding)));
+    spans.extend(right);
+    let status =
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(rgb(th().status_bar_bg)));
     frame.render_widget(status, area);
 }
 
@@ -1110,13 +1206,24 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let right_width =
         UnicodeWidthStr::width(rendered_status.as_str()) + usize::from(!rendered_status.is_empty());
     let query_budget = available.saturating_sub(prefix_width + right_width + min_gap);
-    let rendered_query = simple_truncate(app.query(), query_budget);
+    // An empty box says what it takes; the cursor still sits at its start.
+    let (rendered_query, query_style) = if app.query().is_empty() {
+        (
+            simple_truncate(
+                "search conversations · \"quoted\" = exact phrase · ? for keys",
+                query_budget,
+            ),
+            Style::default().fg(rgb(th().dim_label)),
+        )
+    } else {
+        (simple_truncate(app.query(), query_budget), Style::default())
+    };
     let query_width = UnicodeWidthStr::width(rendered_query.as_str());
     let padding = available.saturating_sub(prefix_width + query_width + right_width);
 
     let mut spans = prompt_spans;
     spans.extend([
-        Span::raw(rendered_query),
+        Span::styled(rendered_query, query_style),
         Span::raw(" ".repeat(padding)),
         Span::styled(rendered_status, status_style),
         Span::raw(" "),
@@ -1312,7 +1419,7 @@ fn render_help_overlay(
             ("G / End".into(), "Jump to bottom"),
             ("/".into(), "Search"),
             ("n / N".into(), "Next / prev match"),
-            ("t".into(), "Cycle tools: off/trunc/full"),
+            ("t".into(), "Cycle tools: summary/short/full"),
             ("T".into(), "Toggle thinking"),
             ("i".into(), "Toggle timing"),
             ("e".into(), "Export to file"),
@@ -1462,9 +1569,6 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     );
     let visible_count = rows_per_page.max(1);
 
-    // Cache separator string (same for all items in this frame)
-    let separator_str = "─".repeat(width);
-
     // Compute now once for consistent relative timestamps across all visible items
     let now = Local::now();
 
@@ -1492,7 +1596,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                 None => Cow::Owned(row_evidence(&source)),
             };
             let row = project_row(&source, &evidence, now);
-            let lines = row_lines(&row, &matcher, is_selected, &separator_str, lines_per_item);
+            let lines = row_lines(&row, &matcher, is_selected, lines_per_item);
             ListItem::new(lines)
         })
         .collect();
@@ -1501,16 +1605,17 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-/// Style one projected row into `lines_per_item` lines: header, preview,
+/// Style one projected row into `lines_per_item` lines: header, preview and
 /// optional context (or a blank line to keep row height uniform, so
-/// click-to-row math matches what is drawn), and a separator.
-fn row_lines<'a>(
+/// click-to-row math matches what is drawn). Rows are told apart by the
+/// bright header over the muted preview, not by a rule line, so a page holds
+/// half again as many rows.
+fn row_lines(
     row: &ListRow,
     matcher: &QueryMatcher,
     is_selected: bool,
-    separator_str: &'a str,
     lines_per_item: usize,
-) -> Vec<Line<'a>> {
+) -> Vec<Line<'static>> {
     let indicator_style = if is_selected {
         Style::default().fg(rgb(th().accent))
     } else {
@@ -1534,12 +1639,14 @@ fn row_lines<'a>(
     let dot = || Span::styled(" · ", Style::default().fg(rgb(th().dot_separator)));
 
     let mut header_spans = vec![Span::styled(INDICATOR, indicator_style)];
-    header_spans.extend(highlight(
-        matcher,
-        &row.project,
-        project_style,
-        highlight_style,
-    ));
+    let (badge, project) = row.project.split_at(row.badge_len);
+    if !badge.is_empty() {
+        header_spans.push(Span::styled(
+            badge.to_string(),
+            Style::default().fg(rgb(th().accent_dim)),
+        ));
+    }
+    header_spans.extend(highlight(matcher, project, project_style, highlight_style));
     if let Some(title) = &row.custom_title {
         header_spans.extend(highlight(
             matcher,
@@ -1609,17 +1716,12 @@ fn row_lines<'a>(
         Line::from(context_spans).style(selection_bg)
     });
 
-    let separator = Line::from(Span::styled(
-        separator_str,
-        Style::default().fg(rgb(th().separator)),
-    ));
-
     if let Some(ctx) = context {
-        vec![header, preview, ctx, separator]
-    } else if lines_per_item == 4 {
-        vec![header, preview, Line::default(), separator]
+        vec![header, preview, ctx]
+    } else if lines_per_item == 3 {
+        vec![header, preview, Line::default()]
     } else {
-        vec![header, preview, separator]
+        vec![header, preview]
     }
 }
 
@@ -2090,6 +2192,58 @@ mod tests {
     }
 
     #[test]
+    fn narrow_status_bar_drops_low_priority_hints_whole() {
+        let hint = |priority, text: &str| Hint {
+            priority,
+            right: false,
+            spans: vec![Span::raw(text.to_string())],
+        };
+        let hints = vec![
+            hint(1, "open"),
+            hint(7, "rename"),
+            hint(0, "help"),
+            hint(5, "fork"),
+        ];
+        let kept = |width| {
+            fit_hints(
+                vec![
+                    hint(1, "open"),
+                    hint(7, "rename"),
+                    hint(0, "help"),
+                    hint(5, "fork"),
+                ],
+                width,
+            )
+            .iter()
+            .map(|hint| hint.spans[0].content.to_string())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(fit_hints(hints, 100).len(), 4);
+        assert_eq!(kept(18), vec!["open", "help", "fork"]);
+        assert_eq!(kept(12), vec!["open", "help"]);
+        assert_eq!(kept(3), Vec::<String>::new());
+    }
+
+    #[test]
+    fn list_status_bar_never_cuts_a_hint_at_80_columns() {
+        let app = App::new(
+            vec![test_conversation()],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_list_status_bar(frame, &app, frame.area()))
+            .unwrap();
+        let line = row_text(&terminal, 0);
+        assert!(line.contains("Enter open"), "{line:?}");
+        assert!(line.trim_end().ends_with("? help"), "{line:?}");
+    }
+
+    #[test]
     fn semantic_status_bar_keeps_hotkeys_when_result_metadata_exists() {
         let mut app = App::new_with_options(
             vec![test_conversation(), test_conversation()],
@@ -2136,7 +2290,7 @@ mod tests {
 
         let line = row_text(&terminal, 0);
         assert!(line.contains("Enter"), "{line:?}");
-        assert!(line.contains("semantic·sem"), "{line:?}");
+        assert!(line.contains("search·sem"), "{line:?}");
         assert!(!line.contains("sem 0.98"), "{line:?}");
         assert!(!line.contains("lex 0.25"), "{line:?}");
         assert!(!line.contains("lex boost"), "{line:?}");
@@ -2366,9 +2520,9 @@ mod tests {
     }
 
     #[test]
-    fn literal_query_rows_without_context_keep_the_four_line_pitch() {
+    fn literal_query_rows_without_context_keep_the_three_line_pitch() {
         // Row 1 shows its literal in the preview (no context line); row 2
-        // hides it in full_text (context line). Both must occupy four lines
+        // hides it in full_text (context line). Both must occupy three lines
         // so that click-to-row math stays aligned with what is drawn.
         let mut visible = test_conversation();
         visible.preview = "preview with hidden_literal shown".to_string();
@@ -2391,12 +2545,13 @@ mod tests {
             .draw(|frame| render_list(frame, &app, frame.area()))
             .unwrap();
 
-        let separator_rows: Vec<u16> = (0..12)
-            .filter(|&y| row_text(&terminal, y).trim_start().starts_with('─'))
+        // Headers carry the message count; each row starts three lines on.
+        let header_rows: Vec<u16> = (0..12)
+            .filter(|&y| row_text(&terminal, y).contains(" msg"))
             .collect();
         assert_eq!(
-            separator_rows,
-            vec![3, 7],
+            header_rows,
+            vec![0, 3],
             "{:?}",
             terminal_contents(&terminal)
         );

@@ -568,7 +568,7 @@ fn subagent_summary_label_parity() {
 
 #[test]
 fn hidden_tool_mode_status_label_is_summary() {
-    assert_eq!(ToolDisplayMode::Hidden.status_label(), "sum");
+    assert_eq!(ToolDisplayMode::Hidden.status_label(), "summary");
 }
 
 #[test]

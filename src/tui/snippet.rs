@@ -223,79 +223,64 @@ fn truncate_around_match(text: &str, (start, end): (usize, usize), max_width: us
     )
 }
 
-/// One line of context for matches the preview hides: a sanitized window
-/// around each hidden range of raw `full_text`, joined by "…" and fitted to
-/// `max_width`.
+/// Snippet of `full_text` around matches the preview hides. Fragments that
+/// read the same (a file read twice, a repeated tool result) are shown once;
+/// each fragment gets at least `MIN_FRAGMENT_WIDTH` columns, so narrow rows
+/// show fewer, readable fragments; and fragment edges are pulled to word
+/// boundaries so words are not cut mid-way.
 pub(super) fn context_snippet(
     full_text: &str,
     hidden_ranges: &[(usize, usize)],
     max_width: usize,
 ) -> Option<String> {
+    const MIN_FRAGMENT_WIDTH: usize = 36;
+    const MAX_FRAGMENTS: usize = 3;
+    const JOIN: &str = " … ";
+
     if hidden_ranges.is_empty() || max_width == 0 {
         return None;
     }
 
-    let num_segments = hidden_ranges.len();
-    let budget_per_segment = max_width.saturating_sub(num_segments + 1) / num_segments; // reserve for ellipsis
-
-    let mut result = String::new();
-    let mut remaining_width = max_width;
-    let mut prev_end_byte: usize = 0;
-
-    for (i, &(match_start, match_end)) in hidden_ranges.iter().enumerate() {
-        let match_char_len = full_text[match_start..match_end].chars().count();
-        let context_chars = budget_per_segment
-            .saturating_sub(match_char_len)
-            .saturating_sub(2) // reserve for "…" on each side
-            / 2;
-
-        let mut start_byte = full_text[..match_start]
-            .char_indices()
-            .rev()
-            .nth(context_chars)
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        start_byte = start_byte.max(prev_end_byte);
-
-        let end_byte = full_text[match_end..]
-            .char_indices()
-            .nth(context_chars)
-            .map(|(idx, _)| match_end + idx)
-            .unwrap_or(full_text.len())
-            .min(full_text.len());
-
-        let sanitized = sanitize_preview(&full_text[start_byte..end_byte]);
-
-        let has_gap = if i == 0 {
-            start_byte > 0
-        } else {
-            start_byte > prev_end_byte
-        };
-        if has_gap {
-            result.push('…');
-            remaining_width = remaining_width.saturating_sub(1);
+    let max_fragments = (max_width / MIN_FRAGMENT_WIDTH).clamp(1, MAX_FRAGMENTS);
+    let mut seen = Vec::new();
+    let mut chosen = Vec::new();
+    for &(match_start, match_end) in hidden_ranges {
+        let key = sanitize_preview(&full_text[word_window(full_text, match_start, match_end, 12)])
+            .to_lowercase();
+        if seen.contains(&key) {
+            continue;
         }
-
-        prev_end_byte = end_byte;
-
-        let seg_char_count = sanitized.chars().count();
-        if seg_char_count <= remaining_width {
-            result.push_str(&sanitized);
-            remaining_width = remaining_width.saturating_sub(seg_char_count);
-        } else {
-            let budget = remaining_width.saturating_sub(1);
-            result.extend(sanitized.chars().take(budget));
-            result.push('…');
-            remaining_width = 0;
+        seen.push(key);
+        chosen.push((match_start, match_end));
+        if chosen.len() == max_fragments {
             break;
         }
     }
 
-    if remaining_width > 0 {
-        let last_end = hidden_ranges.last().map(|(_, e)| *e).unwrap_or(0);
-        if last_end < full_text.len() {
-            result.push('…');
+    let joins = JOIN.chars().count() * (chosen.len() - 1) + 2;
+    let budget = max_width.saturating_sub(joins) / chosen.len();
+    let mut result = String::new();
+    let mut prev_end = 0;
+    let mut last_end = 0;
+    for (index, &(match_start, match_end)) in chosen.iter().enumerate() {
+        let match_chars = full_text[match_start..match_end].chars().count();
+        let context_chars = budget.saturating_sub(match_chars) / 2;
+        let window = word_window(full_text, match_start, match_end, context_chars);
+        let start = window.start.max(prev_end);
+        let end = window.end.max(start);
+        if index == 0 {
+            if start > 0 {
+                result.push('…');
+            }
+        } else {
+            result.push_str(if start > prev_end { JOIN } else { " " });
         }
+        result.push_str(&sanitize_preview(&full_text[start..end]));
+        prev_end = end;
+        last_end = end;
+    }
+    if last_end < full_text.len() {
+        result.push('…');
     }
 
     if result.is_empty() {
@@ -303,6 +288,55 @@ pub(super) fn context_snippet(
     } else {
         Some(simple_truncate(&result, max_width))
     }
+}
+
+/// Byte range around a match reaching `context_chars` characters to each
+/// side, with both edges pulled inward to the nearest whitespace (never past
+/// the match, and by at most a short distance so unspaced scripts keep their
+/// context).
+fn word_window(
+    text: &str,
+    match_start: usize,
+    match_end: usize,
+    context_chars: usize,
+) -> std::ops::Range<usize> {
+    // Pulling an edge in costs context; cap it at half (but enough to clear
+    // an ordinary word), so a long unspaced token keeps its cut instead of
+    // eating the whole fragment.
+    let max_snap = (context_chars / 2).clamp(8, 16);
+    let mut start = text[..match_start]
+        .char_indices()
+        .rev()
+        .nth(context_chars.saturating_sub(1))
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    if context_chars == 0 {
+        start = match_start;
+    }
+    if start > 0
+        && let Some(space) = text[start..match_start]
+            .char_indices()
+            .take(max_snap)
+            .find(|(_, ch)| ch.is_whitespace())
+    {
+        start += space.0 + space.1.len_utf8();
+    }
+
+    let mut end = text[match_end..]
+        .char_indices()
+        .nth(context_chars)
+        .map(|(index, _)| match_end + index)
+        .unwrap_or(text.len());
+    if end < text.len()
+        && let Some(space) = text[match_end..end]
+            .char_indices()
+            .rev()
+            .take(max_snap)
+            .find(|(_, ch)| ch.is_whitespace())
+    {
+        end = match_end + space.0;
+    }
+    start..end
 }
 
 /// Sanitize preview text by removing XML-like tags and normalizing whitespace
@@ -423,6 +457,59 @@ mod tests {
         let snippet = context(&full, "preview", "keyword", 40).unwrap();
         assert!(!snippet.contains('<'));
         assert!(!snippet.contains('\n'));
+    }
+
+    #[test]
+    fn context_shows_repeated_fragments_once() {
+        let repeated = "a Rust TUI for fuzzy searching history";
+        let full = format!(
+            "preview {pad} {repeated} {pad} {repeated} {pad} other tui mention here",
+            pad = "p ".repeat(40)
+        );
+        let snippet = context(&full, "preview", "tui", 120).unwrap();
+        assert_eq!(snippet.matches("fuzzy").count(), 1, "{snippet}");
+        assert!(snippet.contains("other tui mention"), "{snippet}");
+    }
+
+    #[test]
+    fn context_cuts_on_word_boundaries_and_spaces_its_joins() {
+        let full = format!(
+            "preview {} alphabetical keyword soup {} betamax keyword stew {}",
+            "filler ".repeat(20),
+            "filler ".repeat(20),
+            "filler ".repeat(20)
+        );
+        let snippet = context(&full, "preview", "keyword", 80).unwrap();
+        assert!(snippet.contains(" … "), "{snippet}");
+        for fragment in snippet.split(" … ") {
+            let fragment = fragment.trim_matches('…');
+            assert!(
+                fragment.split(' ').all(|word| word.is_empty()
+                    || [
+                        "filler",
+                        "alphabetical",
+                        "keyword",
+                        "soup",
+                        "betamax",
+                        "stew"
+                    ]
+                    .contains(&word)),
+                "a word was cut: {snippet}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_context_shows_one_fragment() {
+        let full = format!(
+            "preview {} first keyword {} second keyword {}",
+            "x ".repeat(40),
+            "y ".repeat(40),
+            "z ".repeat(40)
+        );
+        let snippet = context(&full, "preview", "keyword", 60).unwrap();
+        assert_eq!(snippet.matches("keyword").count(), 1, "{snippet}");
+        assert!(UnicodeWidthStr::width(snippet.as_str()) <= 60);
     }
 
     #[test]

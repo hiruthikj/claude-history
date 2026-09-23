@@ -20,7 +20,6 @@ pub struct Theme {
 
     // Structural
     pub border: Rgb,
-    pub separator: Rgb,
 
     // Backgrounds
     pub status_bar_bg: Rgb,
@@ -82,7 +81,6 @@ impl Theme {
             text_muted: (100, 100, 100),
 
             border: (60, 60, 60),
-            separator: (50, 50, 50),
 
             status_bar_bg: (30, 30, 35),
             overlay_bg: (25, 25, 30),
@@ -135,8 +133,7 @@ impl Theme {
             text_secondary: (88, 101, 112), // Cool gray for metadata
             text_muted: (130, 140, 148),    // Light gray for labels
 
-            border: (188, 196, 200),    // Subtle cool gray borders
-            separator: (200, 208, 212), // Lighter separators
+            border: (188, 196, 200), // Subtle cool gray borders
 
             status_bar_bg: (238, 241, 244), // Very light cool gray
             overlay_bg: (246, 248, 249),    // Near-white for modals

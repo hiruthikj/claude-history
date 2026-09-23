@@ -204,7 +204,7 @@ fn semantic_ranked_selection_opens_selected_conversation_and_returns() {
 }
 
 #[test]
-fn semantic_list_click_uses_three_line_rows() {
+fn semantic_list_click_uses_the_list_row_pitch() {
     let dir = tempfile::tempdir().unwrap();
     let first = dir.path().join("first.jsonl");
     let second = dir.path().join("second.jsonl");
@@ -439,4 +439,75 @@ fn submit_empty_rename_clears_searchable_title() {
 
     assert_eq!(app.conversations[0].custom_title, None);
     assert!(search::search(&app.conversations, &app.searchable, "old", Local::now()).is_empty());
+}
+
+#[test]
+fn opening_a_search_hit_starts_at_its_first_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let lines = (0..60)
+        .map(|index| {
+            let text = if index == 40 {
+                "the cache warming fix landed here".to_string()
+            } else {
+                format!("filler message {index}")
+            };
+            serde_json::json!({
+                "type": "user",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"role": "user", "content": text}
+            })
+            .to_string()
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let mut app = App::new(
+        vec![test_conversation(path, None)],
+        ToolDisplayMode::Truncated,
+        false,
+        KeyBindings::default(),
+        vec![],
+    );
+    app.selected = Some(0);
+    app.query = "warming".to_string();
+
+    app.enter_view_mode(80);
+
+    let AppMode::View(state) = app.app_mode() else {
+        unreachable!()
+    };
+    assert_eq!(state.search_mode, ViewSearchMode::Active);
+    assert_eq!(state.search_query, "warming");
+    assert!(state.scroll_offset > 0, "opened at the top");
+    let line = state.rendered_lines[state.scroll_offset]
+        .spans
+        .iter()
+        .map(|(text, _)| text.as_str())
+        .collect::<String>();
+    assert!(line.contains("warming"), "{line:?}");
+}
+
+#[test]
+fn opening_without_a_matching_query_starts_at_the_top() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    write_named_conversation(&path, "hello there");
+    let mut app = App::new(
+        vec![test_conversation(path, None)],
+        ToolDisplayMode::Truncated,
+        false,
+        KeyBindings::default(),
+        vec![],
+    );
+    app.selected = Some(0);
+    app.query = "absent".to_string();
+
+    app.enter_view_mode(80);
+
+    let AppMode::View(state) = app.app_mode() else {
+        unreachable!()
+    };
+    assert_eq!(state.search_mode, ViewSearchMode::Off);
+    assert!(state.search_query.is_empty());
+    assert_eq!(state.scroll_offset, 0);
 }
