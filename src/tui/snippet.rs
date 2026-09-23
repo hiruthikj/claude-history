@@ -344,12 +344,18 @@ pub(super) fn sanitize_preview(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut in_tag = false;
     let mut last_was_space = false;
+    let mut chars = text.chars().peekable();
 
-    for ch in text.chars() {
+    while let Some(ch) = chars.next() {
         match ch {
             '<' => in_tag = true,
             '>' => in_tag = false,
             _ if in_tag => {}
+            // Markdown emphasis and code markers read as noise on one line.
+            '`' => {}
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+            }
             '\n' | '\r' | '\t' | ' ' => {
                 if !last_was_space {
                     result.push(' ');
@@ -517,6 +523,14 @@ mod tests {
         assert_eq!(
             sanitize_preview("  a <tag attr=\"x\">b</tag>\n\n c\t d "),
             "a b c d"
+        );
+    }
+
+    #[test]
+    fn sanitize_preview_drops_markdown_emphasis_and_code_markers() {
+        assert_eq!(
+            sanitize_preview("**Wakefit Latex** costs `8030` * 2"),
+            "Wakefit Latex costs 8030 * 2"
         );
     }
 

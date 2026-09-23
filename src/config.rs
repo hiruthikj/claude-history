@@ -154,6 +154,14 @@ mode = "vector"
     }
 
     #[test]
+    fn display_theme_parses_and_rejects_unknown_names() {
+        use crate::tui::theme::ThemeChoice;
+        let config: ConfigFile = toml::from_str("[display]\ntheme = \"light\"\n").unwrap();
+        assert_eq!(config.display.unwrap().theme, Some(ThemeChoice::Light));
+        assert!(toml::from_str::<ConfigFile>("[display]\ntheme = \"sepia\"\n").is_err());
+    }
+
+    #[test]
     fn search_sort_parses_recency_and_defaults_to_relevance() {
         let config: ConfigFile = toml::from_str("").unwrap();
         assert_eq!(config.search.unwrap_or_default().sort, None);
@@ -253,6 +261,8 @@ pub struct DisplayConfig {
     pub show_thinking: Option<bool>,
     pub plain: Option<bool>,
     pub pager: Option<bool>,
+    /// `auto` (ask the terminal), `dark` or `light`.
+    pub theme: Option<crate::tui::theme::ThemeChoice>,
 }
 
 #[derive(Deserialize, Debug, Default)]

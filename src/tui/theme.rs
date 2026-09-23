@@ -65,6 +65,12 @@ pub struct Theme {
     pub green: Rgb,
     pub blue: Rgb,
 
+    /// Project name hues; a project keeps its hue across launches
+    /// (see [`Theme::project_color`]).
+    pub project_palette: [Rgb; 8],
+    /// A worktree suffix (`repo/worktree`) and other quiet name parts.
+    pub project_suffix: Rgb,
+
     // Syntect theme name for code highlighting
     pub syntect_theme: &'static str,
 }
@@ -95,8 +101,8 @@ impl Theme {
 
             custom_title: (200, 180, 120),
             custom_title_highlight: (230, 210, 150),
-            summary: (140, 155, 175),
-            summary_highlight: (180, 195, 215),
+            summary: (195, 202, 214),
+            summary_highlight: (235, 240, 250),
             model_color: (180, 140, 200),
             duration_color: (100, 140, 130),
             preview: (130, 130, 130),
@@ -118,6 +124,18 @@ impl Theme {
 
             green: (0, 255, 0),
             blue: (100, 149, 237),
+
+            project_palette: [
+                (97, 175, 239),  // blue
+                (152, 195, 121), // green
+                (229, 192, 123), // amber
+                (198, 120, 221), // violet
+                (86, 182, 194),  // cyan
+                (224, 108, 117), // rose
+                (209, 154, 102), // orange
+                (170, 160, 240), // lavender
+            ],
+            project_suffix: (120, 125, 135),
 
             syntect_theme: "base16-ocean.dark",
         }
@@ -148,8 +166,8 @@ impl Theme {
 
             custom_title: (140, 105, 30),           // Deep warm gold
             custom_title_highlight: (170, 130, 40), // Brighter gold
-            summary: (80, 100, 125),                // Slate blue
-            summary_highlight: (50, 75, 110),       // Deeper slate for highlights
+            summary: (50, 62, 78),                  // Near-body slate: the row's headline
+            summary_highlight: (20, 40, 75),        // Deeper slate for highlights
             model_color: (115, 75, 145),            // Deep purple
             duration_color: (45, 115, 105),         // Teal-green (matches accent_dim)
             preview: (108, 116, 124),               // Cool medium gray
@@ -172,8 +190,58 @@ impl Theme {
             green: (40, 130, 60), // Dark green for quotes
             blue: (36, 97, 160),  // Dark blue for links
 
+            project_palette: [
+                (30, 100, 180), // blue
+                (50, 120, 40),  // green
+                (150, 100, 0),  // amber
+                (140, 50, 160), // violet
+                (0, 120, 140),  // cyan
+                (180, 50, 60),  // rose
+                (170, 85, 20),  // orange
+                (90, 80, 180),  // lavender
+            ],
+            project_suffix: (120, 130, 138),
+
             syntect_theme: "InspiredGitHub",
         }
+    }
+}
+
+impl Theme {
+    /// The hue for a project name. Worktrees (`repo/branch`) share their
+    /// repo's hue. FNV-1a, not `RandomState`, so it is stable across runs,
+    /// then the splitmix64 finalizer: FNV's low 3 bits (the palette index)
+    /// depend only on the low 3 bits of each byte, which throws most of a
+    /// name away (`Work` and `h007` shared a hue without mixing).
+    pub fn project_color(&self, project: &str) -> Rgb {
+        let repo = project.split('/').next().unwrap_or(project);
+        let mut hash = repo.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        hash ^= hash >> 31;
+        self.project_palette[(hash % self.project_palette.len() as u64) as usize]
+    }
+}
+
+/// `[display].theme`: pick a palette instead of asking the terminal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
+/// Fix the theme for the process. Call once, before raw mode: `Auto` probes
+/// the terminal. Later calls (and [`detect_theme`]) return the first choice.
+pub fn init_theme(choice: ThemeChoice) -> &'static Theme {
+    match choice {
+        ThemeChoice::Auto => detect_theme(),
+        ThemeChoice::Dark => THEME.get_or_init(Theme::dark),
+        ThemeChoice::Light => THEME.get_or_init(Theme::light),
     }
 }
 
@@ -197,4 +265,41 @@ pub fn detect_theme() -> &'static Theme {
             _ => Theme::dark(), // Default to dark on detection failure
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PINNED: usize = 7;
+
+    #[test]
+    fn project_hue_is_stable_and_shared_by_worktrees() {
+        let theme = Theme::dark();
+        assert_eq!(
+            theme.project_color("claude-history"),
+            theme.project_color("claude-history/fix-resume")
+        );
+        // Pinned so a hasher change (which would recolour every project for
+        // the user) is a deliberate test edit.
+        let index = |name: &str| {
+            let color = theme.project_color(name);
+            theme
+                .project_palette
+                .iter()
+                .position(|&c| c == color)
+                .unwrap()
+        };
+        assert_eq!(index("claude-history"), PINNED);
+        let mut counts = [0usize; 8];
+        for n in 0..256 {
+            counts[index(&format!("project-{n}"))] += 1;
+        }
+        // 32 per hue on average; a weak index would pile names onto a few.
+        assert!(
+            counts.iter().all(|&count| (16..=48).contains(&count)),
+            "{counts:?}"
+        );
+        assert_ne!(index("Work"), index("h007"));
+    }
 }

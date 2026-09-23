@@ -23,6 +23,8 @@ pub const INDICATOR: &str = " ▌ ";
 const MIN_PADDING: usize = 3;
 /// Columns a preview or context line gives up to the indicator and margin.
 const LINE_MARGIN: usize = 4;
+/// Narrowest list that still shows a conversation's duration.
+const DURATION_MIN_WIDTH: usize = 100;
 
 /// Everything a row is derived from.
 #[derive(Clone, Copy)]
@@ -69,6 +71,8 @@ pub struct ListRow {
     pub project: String,
     /// Bytes of `project` that are the source label (styled as a badge).
     pub badge_len: usize,
+    /// The untruncated project name, which picks the project's colour.
+    pub hue_key: String,
     /// " · title", when the session was renamed and there is room.
     pub custom_title: Option<String>,
     /// " · summary", when the transcript has one and there is room.
@@ -126,7 +130,11 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     } else {
         format!("{} msgs", conv.message_count)
     };
-    let duration = conv.duration_minutes.map(format_duration);
+    // Below this width the title is worth more than the duration.
+    let duration = conv
+        .duration_minutes
+        .filter(|_| width >= DURATION_MIN_WIDTH)
+        .map(format_duration);
     let semantic_meta = (source.semantic_mode && width >= 70)
         .then(|| source.semantic.map(semantic_row_metadata))
         .flatten();
@@ -218,6 +226,7 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     ListRow {
         project,
         badge_len,
+        hue_key: conv.project_name.clone().unwrap_or_default(),
         custom_title,
         summary,
         padding,
@@ -434,7 +443,7 @@ mod tests {
     fn plain_row_fits_the_width_exactly() {
         let conv = conversation();
         let matcher = QueryMatcher::from_query("");
-        let row = project_row(&source(&conv, &matcher, 80), &RowEvidence::None, now());
+        let row = project_row(&source(&conv, &matcher, 120), &RowEvidence::None, now());
 
         assert_eq!(row.project, "project");
         assert_eq!(row.custom_title.as_deref(), Some(" · a title"));
@@ -457,7 +466,32 @@ mod tests {
             + row.duration.as_deref().map_or(0, |s| s.width())
             + 3
             + row.timestamp.width();
-        assert_eq!(left + row.padding + right, 79, "one column of right margin");
+        assert_eq!(
+            left + row.padding + right,
+            119,
+            "one column of right margin"
+        );
+    }
+
+    #[test]
+    fn narrow_rows_give_the_duration_up_to_the_title() {
+        let mut conv = conversation();
+        conv.custom_title = Some("Last commit review for improvements".to_string());
+        let matcher = QueryMatcher::from_query("");
+
+        let narrow = project_row(&source(&conv, &matcher, 80), &RowEvidence::None, now());
+        assert_eq!(narrow.duration, None);
+        assert_eq!(
+            narrow.custom_title.as_deref(),
+            Some(" · Last commit review for improvements")
+        );
+
+        let wide = project_row(
+            &source(&conv, &matcher, DURATION_MIN_WIDTH),
+            &RowEvidence::None,
+            now(),
+        );
+        assert_eq!(wide.duration.as_deref(), Some("1h 15m"));
     }
 
     #[test]

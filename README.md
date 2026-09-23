@@ -667,6 +667,10 @@ plain = false
 # Use pager for output (default: true when stdout is a terminal)
 pager = true
 
+# Colour theme: "auto" asks the terminal for its background, or force
+# "dark" / "light" when detection guesses wrong (default: "auto")
+# theme = "auto"
+
 [resume]
 # Default arguments to pass to claude command when resuming
 # Example: default_args = ["--dangerously-skip-permissions"]

@@ -12,7 +12,7 @@ use crate::tui::list_rows::{
 };
 #[cfg(test)]
 use crate::tui::snippet::fit_around_matches;
-use crate::tui::snippet::{highlight, sanitize_preview, simple_truncate};
+use crate::tui::snippet::{highlight, highlight_ranges, sanitize_preview, simple_truncate};
 use crate::tui::theme::{self, Theme};
 use crate::tui::viewer::{LineStyle, RenderedLine};
 use chrono::Local;
@@ -613,7 +613,7 @@ fn render_view_header(frame: &mut Frame, app: &App, state: &ViewState, area: Rec
             spans.push(Span::raw(HEADER_SEPARATOR));
         }
         let style = match part {
-            HeaderPart::Project => Style::default().fg(rgb(th().accent)).bold(),
+            HeaderPart::Project => Style::default().fg(rgb(th().project_color(text))).bold(),
             HeaderPart::Title => Style::default().fg(rgb(th().custom_title)),
             HeaderPart::Model => Style::default().fg(rgb(th().model_color)),
             HeaderPart::Duration => Style::default().fg(rgb(th().duration_color)),
@@ -1527,6 +1527,46 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 /// click-to-row math matches what is drawn). Rows are told apart by the
 /// bright header over the muted preview, not by a rule line, so a page holds
 /// half again as many rows.
+/// Split `text` (the project part of a row, after any source badge) into a
+/// leading ` · ` joiner, the repo name and a `/worktree` suffix, each with
+/// its own base style from `styles`; match `ranges` over the whole text keep
+/// highlighting across the split.
+fn project_spans(
+    text: &str,
+    ranges: Vec<(usize, usize)>,
+    styles: [Style; 3],
+    match_style: Style,
+) -> Vec<Span<'static>> {
+    let name_start = text
+        .strip_prefix(" \u{b7} ")
+        .map_or(0, |_| " \u{b7} ".len());
+    let suffix_start = text[name_start..]
+        .find('/')
+        .map_or(text.len(), |slash| name_start + slash);
+    let bounds = [0, name_start, suffix_start, text.len()];
+    let mut spans = Vec::new();
+    for (segment, style) in styles.into_iter().enumerate() {
+        let (start, end) = (bounds[segment], bounds[segment + 1]);
+        if start == end {
+            continue;
+        }
+        let clipped = ranges
+            .iter()
+            .filter_map(|&(from, to)| {
+                let (from, to) = (from.max(start), to.min(end));
+                (from < to).then(|| (from - start, to - start))
+            })
+            .collect();
+        spans.extend(highlight_ranges(
+            &text[start..end],
+            clipped,
+            style,
+            match_style,
+        ));
+    }
+    spans
+}
+
 fn row_lines(
     row: &ListRow,
     matcher: &QueryMatcher,
@@ -1538,11 +1578,14 @@ fn row_lines(
     } else {
         Style::default().fg(rgb(th().border))
     };
+    let hue = rgb(th().project_color(&row.hue_key));
     let project_style = if is_selected {
-        Style::default().fg(rgb(th().text_primary)).bold()
+        Style::default().fg(hue).bold()
     } else {
-        Style::default().fg(rgb(th().text_primary))
+        Style::default().fg(hue)
     };
+    let project_match_style = project_style.bold().underlined();
+    let suffix_style = Style::default().fg(rgb(th().project_suffix));
     let highlight_style = if is_selected {
         Style::default().fg(rgb(th().accent)).bold()
     } else {
@@ -1563,7 +1606,12 @@ fn row_lines(
             Style::default().fg(rgb(th().accent_dim)),
         ));
     }
-    header_spans.extend(highlight(matcher, project, project_style, highlight_style));
+    header_spans.extend(project_spans(
+        project,
+        matcher.ranges(project),
+        [suffix_style, project_style, suffix_style],
+        project_match_style,
+    ));
     if let Some(title) = &row.custom_title {
         header_spans.extend(highlight(
             matcher,

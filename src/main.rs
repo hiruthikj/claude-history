@@ -161,11 +161,17 @@ fn run() -> Result<()> {
         };
     }
 
-    // Detect terminal theme before entering raw mode / alternate screen,
-    // as terminal_light queries the terminal for background color
-    tui::theme::detect_theme();
-
     let config = config::load_config()?;
+
+    // Fix the theme before entering raw mode / alternate screen, as
+    // terminal_light queries the terminal for background color
+    tui::theme::init_theme(
+        config
+            .display
+            .as_ref()
+            .and_then(|display| display.theme)
+            .unwrap_or_default(),
+    );
     let sources = SourceSet::resolve_selected(config.sources.as_deref(), &args.sources)?;
 
     // Merge CLI arguments with config file settings. CLI takes precedence.

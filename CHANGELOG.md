@@ -31,6 +31,11 @@
   `searched the web 2 times`
 - `Shift+Tab` skips sources with no conversations, and the viewer keeps the
   resume key on the status bar while a search is active
+- Each project gets its own stable colour in the list and viewer (worktrees
+  share their repo's), titles are brighter than project names, previews drop
+  `**`/backtick markup, and narrow lists give the duration's room to the title
+- `[display] theme = "dark" | "light"` forces a palette when terminal
+  detection guesses wrong
 - `--generate-semantic-cache` rejects `--local`, which would have left other
   projects' embeddings evictable
 
