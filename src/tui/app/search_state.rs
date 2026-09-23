@@ -539,14 +539,13 @@ impl App {
     /// Steps the list through All → each source → All. A no-op with one
     /// source.
     pub(super) fn cycle_source_filter(&mut self) {
-        let count = self.sources.roots().len();
-        if count < 2 {
+        let populated = self.populated_source_indices();
+        if populated.len() < 2 {
             return;
         }
         self.source_filter = match self.source_filter {
-            None => Some(0),
-            Some(index) if index + 1 < count => Some(index + 1),
-            Some(_) => None,
+            None => populated.first().copied(),
+            Some(current) => populated.iter().copied().find(|&index| index > current),
         };
         self.semantic_sent_scope_signature = None;
         self.invalidate_search_generation();

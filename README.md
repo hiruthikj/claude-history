@@ -181,7 +181,8 @@ JSONL files and their matching session artifact directories.
 | `↑` / `↓`               | Move selection                   |
 | `←` / `→`               | Move cursor in search            |
 | `Ctrl+P` / `Ctrl+N`     | Move selection (vi-style)        |
-| `Ctrl+D` / `Ctrl+U`     | Half page down/up (vim-style)    |
+| `Ctrl+D`                | Half page down (vim-style)       |
+| `Ctrl+U` / `Ctrl+K`     | Clear search before/after cursor |
 | `Page Up` / `Page Down` | Jump by page                     |
 | `Home` / `End`          | Jump to first/last               |
 | `Enter`                 | Open conversation viewer         |
@@ -196,6 +197,7 @@ JSONL files and their matching session artifact directories.
 | `Tab`                   | Toggle all / workspace scope     |
 | `Shift+Tab`             | Cycle sources (when several)     |
 | `Ctrl+T`                | Toggle lexical / semantic search |
+| `Ctrl+S`                | Semantic details for the hit     |
 | `Alt+S`                 | Sort by best match / newest      |
 | `?`                     | Show keyboard shortcuts          |
 | `Esc`                   | Clear search input, or quit      |

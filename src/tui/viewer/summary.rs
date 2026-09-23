@@ -31,7 +31,8 @@ pub(super) struct ToolActivitySummary {
     agents: usize,
     fetched_urls: usize,
     web_searches: usize,
-    other_tools: usize,
+    /// Every other tool by display name, in first-call order.
+    other_tools: Vec<(String, usize)>,
 }
 
 impl ToolActivitySummary {
@@ -43,10 +44,17 @@ impl ToolActivitySummary {
             "Glob" => self.searched_file_patterns += 1,
             "Edit" => self.edited_files += 1,
             "Write" => self.wrote_files += 1,
-            "Task" => self.agents += 1,
+            "Task" | "Agent" => self.agents += 1,
             "WebFetch" => self.fetched_urls += 1,
             "WebSearch" => self.web_searches += 1,
-            _ => self.other_tools += 1,
+            other => self.add_other(tool_display_name(other), 1),
+        }
+    }
+
+    fn add_other(&mut self, name: &str, count: usize) {
+        match self.other_tools.iter_mut().find(|(seen, _)| seen == name) {
+            Some((_, seen_count)) => *seen_count += count,
+            None => self.other_tools.push((name.to_string(), count)),
         }
     }
 
@@ -60,7 +68,9 @@ impl ToolActivitySummary {
         self.agents += other.agents;
         self.fetched_urls += other.fetched_urls;
         self.web_searches += other.web_searches;
-        self.other_tools += other.other_tools;
+        for (name, count) in other.other_tools {
+            self.add_other(&name, count);
+        }
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -73,8 +83,8 @@ impl ToolActivitySummary {
             + self.agents
             + self.fetched_urls
             + self.web_searches
-            + self.other_tools
             == 0
+            && self.other_tools.is_empty()
     }
 
     fn sentence(&self) -> String {
@@ -97,9 +107,45 @@ impl ToolActivitySummary {
         push_summary_item(&mut parts, self.wrote_files, "wrote", "file");
         push_summary_item(&mut parts, self.agents, "started", "agent");
         push_summary_item(&mut parts, self.fetched_urls, "fetched", "URL");
-        push_summary_item(&mut parts, self.web_searches, "searched", "web");
-        push_summary_item(&mut parts, self.other_tools, "called", "tool");
+        if self.web_searches > 0 {
+            parts.push(match self.web_searches {
+                1 => "searched the web".to_string(),
+                n => format!("searched the web {n} times"),
+            });
+        }
+        if !self.other_tools.is_empty() {
+            parts.push(format!("called {}", other_tools_phrase(&self.other_tools)));
+        }
         capitalize_first(parts.join(", "))
+    }
+}
+
+/// How many named tools a summary lists before collapsing the rest.
+const NAMED_OTHER_TOOLS: usize = 3;
+
+/// `Skill`, `Skill ×2, ToolSearch`, `a, b, c +2 more`: names say more than
+/// "called 3 tools", and the count keeps a long tail readable.
+fn other_tools_phrase(tools: &[(String, usize)]) -> String {
+    let mut named: Vec<String> = tools
+        .iter()
+        .take(NAMED_OTHER_TOOLS)
+        .map(|(name, count)| match count {
+            1 => name.clone(),
+            n => format!("{name} ×{n}"),
+        })
+        .collect();
+    let rest: usize = tools.iter().skip(NAMED_OTHER_TOOLS).map(|(_, n)| n).sum();
+    if rest > 0 {
+        named.push(format!("+{rest} more"));
+    }
+    named.join(", ")
+}
+
+/// MCP tools are `mcp__<server>__<tool>`; the tool part is what reads.
+fn tool_display_name(name: &str) -> &str {
+    match name.strip_prefix("mcp__") {
+        Some(rest) => rest.rsplit_once("__").map_or(rest, |(_, tool)| tool),
+        None => name,
     }
 }
 

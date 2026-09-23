@@ -364,13 +364,15 @@ fn shift_tab_cycles_the_list_through_each_source() {
         flat: false,
         resume_env: ResumeEnv::Inherit,
     };
+    // `/c/empty` loaded nothing: cycling skips it.
     let sources = SourceSet::from_roots_for_test(vec![
         root("/c/personal", None),
+        root("/c/empty", Some("empty")),
         root("/c/work", Some("work")),
     ]);
     let mut conversations = sort_conversations();
     conversations[0].origin = Some(sources.roots()[0].clone());
-    conversations[1].origin = Some(sources.roots()[1].clone());
+    conversations[1].origin = Some(sources.roots()[2].clone());
     let mut app = app(conversations, vec![]);
     app.set_sources(sources);
     assert!(app.has_source_choice());
@@ -395,6 +397,33 @@ fn shift_tab_cycles_the_list_through_each_source() {
     app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT, 10);
     assert_eq!(app.source_filter_label(), None);
     assert_eq!(app.filtered().len(), 2);
+}
+
+#[test]
+fn one_populated_source_offers_no_source_choice() {
+    use crate::history::sources::{ResumeEnv, SourceRoot};
+    use crate::history::{Source, SourceSet};
+    let root = |dir: &str, kind: Source| SourceRoot {
+        kind,
+        name: None,
+        dir: std::path::PathBuf::from(dir),
+        flat: false,
+        resume_env: ResumeEnv::Inherit,
+    };
+    let sources = SourceSet::from_roots_for_test(vec![
+        root("/c/claude", Source::Claude),
+        root("/c/pi", Source::Pi),
+    ]);
+    let mut conversations = sort_conversations();
+    for conversation in &mut conversations {
+        conversation.origin = Some(sources.roots()[0].clone());
+    }
+    let mut app = app(conversations, vec![]);
+    app.set_sources(sources);
+
+    assert!(!app.has_source_choice());
+    app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT, 10);
+    assert_eq!(app.source_filter_label(), None);
 }
 
 #[test]

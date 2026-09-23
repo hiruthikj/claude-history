@@ -22,6 +22,17 @@
   least useful hints on narrow terminals instead of cutting the line off
 - Opening a search result starts the viewer at the first match, with `n`/`N`
   ready to step through the rest
+- Resuming or forking a session whose recorded project folder is gone, from
+  the folder the session already lives in, no longer empties the transcript
+  by copying it onto itself
+- The viewer's tool summary groups a whole run of tool calls again (attachment
+  records and hidden thinking split it into one line per call), counts `Agent`
+  subagents, names other tools (`called Skill ×2, search_threads`) and says
+  `searched the web 2 times`
+- `Shift+Tab` skips sources with no conversations, and the viewer keeps the
+  resume key on the status bar while a search is active
+- `--generate-semantic-cache` rejects `--local`, which would have left other
+  projects' embeddings evictable
 
 ## v0.1.75 (2026-09-16)
 

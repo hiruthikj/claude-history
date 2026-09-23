@@ -517,8 +517,29 @@ impl App {
         self.source_filter_root().map(|root| root.label())
     }
 
+    /// More than one source actually holds conversations; an empty root
+    /// (say a Pi dir that was never used) is not worth a filter step.
     pub fn has_source_choice(&self) -> bool {
-        self.sources.roots().len() > 1
+        self.populated_source_indices().len() > 1
+    }
+
+    /// Indices into `sources.roots()` of roots that loaded at least one
+    /// conversation, in configured order.
+    pub(super) fn populated_source_indices(&self) -> Vec<usize> {
+        self.sources
+            .roots()
+            .iter()
+            .enumerate()
+            .filter(|(_, root)| {
+                self.conversations.iter().any(|conversation| {
+                    conversation
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| std::sync::Arc::ptr_eq(origin, root))
+                })
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     pub fn list_sort(&self) -> SortMode {

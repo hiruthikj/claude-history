@@ -171,6 +171,20 @@ pub fn render_parsed_conversation(
             continue;
         }
 
+        if pending_tool_summary.is_none() {
+            render_entry_with_range(&mut lines, &mut messages, parsed, options);
+            continue;
+        }
+
+        // Only an entry that draws something ends a tool group; attachment
+        // records, hidden thinking and hidden subagent turns sit between
+        // tool calls in real transcripts and must not split them.
+        let mut entry_lines = Vec::new();
+        let mut entry_messages = Vec::new();
+        render_entry_with_range(&mut entry_lines, &mut entry_messages, parsed, options);
+        if entry_lines.iter().all(|line| line.spans.is_empty()) {
+            continue;
+        }
         flush_tool_summary(
             &mut lines,
             &mut messages,
@@ -178,8 +192,13 @@ pub fn render_parsed_conversation(
             entries,
             options,
         );
-
-        render_entry_with_range(&mut lines, &mut messages, parsed, options);
+        let offset = lines.len();
+        lines.extend(entry_lines);
+        messages.extend(entry_messages.into_iter().map(|range| MessageRange {
+            start_line: range.start_line + offset,
+            end_line: range.end_line + offset,
+            ..range
+        }));
     }
 
     flush_tool_summary(

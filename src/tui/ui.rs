@@ -414,65 +414,130 @@ fn render_semantic_debug_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Check if the header (with summary) fits on a single line given terminal width
-fn header_fits_single_line(conv: &crate::history::Conversation, terminal_width: u16) -> bool {
-    let summary = match &conv.summary {
-        Some(s) => s,
-        None => return true, // No summary means it's already single line
-    };
+/// One piece of the viewer header's metadata line; the kind picks its style.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeaderPart {
+    Project,
+    Title,
+    Model,
+    Count,
+    Duration,
+    Tokens,
+    Timestamp,
+}
 
-    let project = conv.project_name.as_deref().unwrap_or("Unknown");
+const HEADER_INDENT: &str = "  ";
+const HEADER_SEPARATOR: &str = " \u{b7} ";
 
-    // Calculate custom title length if present
-    let custom_title_len = conv
-        .custom_title
-        .as_ref()
-        .map(|t| t.chars().count() + 3) // + " · "
-        .unwrap_or(0);
+/// What the viewer header says at a given width. Both the layout (its
+/// height) and the renderer read this, so they cannot disagree.
+#[derive(Debug)]
+struct ViewHeader {
+    parts: Vec<(HeaderPart, String)>,
+    summary: Option<String>,
+    /// The summary fits after the metadata on the first line.
+    summary_inline: bool,
+}
 
-    // Calculate model length if present
-    let model_len = conv
-        .model
-        .as_ref()
-        .map(|m| format_model_name(m).len() + 3) // + " · "
-        .unwrap_or(0);
+impl ViewHeader {
+    fn new(
+        conv: Option<&crate::history::Conversation>,
+        fallback: &std::path::Path,
+        width: u16,
+    ) -> Self {
+        let Some(conv) = conv else {
+            let stem = fallback
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("Unknown");
+            return Self {
+                parts: vec![(HeaderPart::Project, stem.to_string())],
+                summary: None,
+                summary_inline: false,
+            };
+        };
+        let width = width as usize;
+        let mut parts = vec![(
+            HeaderPart::Project,
+            conv.project_name
+                .as_deref()
+                .unwrap_or("Unknown")
+                .to_string(),
+        )];
+        if let Some(title) = &conv.custom_title {
+            parts.push((HeaderPart::Title, title.clone()));
+        }
+        if let Some(model) = &conv.model {
+            parts.push((HeaderPart::Model, format_model_name(model)));
+        }
+        parts.push((
+            HeaderPart::Count,
+            match conv.message_count {
+                1 => "1 message".to_string(),
+                n => format!("{n} messages"),
+            },
+        ));
+        if let Some(minutes) = conv.duration_minutes {
+            parts.push((HeaderPart::Duration, format_duration(minutes)));
+        }
+        let timestamp = conv.timestamp.format("%Y-%m-%d %H:%M").to_string();
+        let without_tokens = header_width(&parts) + separated(&timestamp);
+        if conv.total_tokens > 0 {
+            let long = format_tokens_long(conv.total_tokens);
+            let tokens = if without_tokens + separated(&long) <= width {
+                long
+            } else {
+                format_tokens(conv.total_tokens)
+            };
+            parts.push((HeaderPart::Tokens, tokens));
+        }
+        parts.push((HeaderPart::Timestamp, timestamp));
+        let summary_inline = conv
+            .summary
+            .as_deref()
+            .is_some_and(|summary| header_width(&parts) + separated(summary) <= width);
+        Self {
+            parts,
+            summary: conv.summary.clone(),
+            summary_inline,
+        }
+    }
 
-    let msg_count_len = if conv.message_count == 1 {
-        "1 message".len()
-    } else {
-        format!("{} messages", conv.message_count).len()
-    };
+    /// Metadata line, optional summary line, bottom border.
+    fn height(&self) -> u16 {
+        if self.summary.is_some() && !self.summary_inline {
+            3
+        } else {
+            2
+        }
+    }
+}
 
-    // Calculate tokens length if present (use long form for single-line check)
-    let tokens_len = if conv.total_tokens > 0 {
-        format_tokens_long(conv.total_tokens).len() + 3 // + " · "
-    } else {
-        0
-    };
+fn separated(text: &str) -> usize {
+    HEADER_SEPARATOR.width() + text.width()
+}
 
-    // timestamp is "YYYY-MM-DD HH:MM" = 16 chars
-    let timestamp_len = 16;
+fn header_width(parts: &[(HeaderPart, String)]) -> usize {
+    HEADER_INDENT.width()
+        + parts
+            .iter()
+            .enumerate()
+            .map(|(index, (_, text))| {
+                if index == 0 {
+                    text.width()
+                } else {
+                    separated(text)
+                }
+            })
+            .sum::<usize>()
+}
 
-    // Duration length (if present): " · Xm" or " · Xh Ym" etc.
-    let duration_len = conv
-        .duration_minutes
-        .map_or(0, |m| 3 + format_duration(m).len()); // " · " + duration
-
-    // Format: "  project · custom_title · model · msg_count · duration · tokens · timestamp · summary"
-    let total_len = 2
-        + project.len()
-        + 3
-        + custom_title_len
-        + model_len
-        + msg_count_len
-        + duration_len
-        + 3
-        + tokens_len
-        + timestamp_len
-        + 3
-        + summary.len();
-
-    total_len <= terminal_width as usize
+fn view_header(app: &App, state: &ViewState, width: u16) -> ViewHeader {
+    let conv = app
+        .conversations()
+        .iter()
+        .find(|c| c.path == state.conversation_path);
+    ViewHeader::new(conv, &state.conversation_path, width)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -488,17 +553,7 @@ pub fn view_layout_rects(area: Rect, app: &App, state: &ViewState) -> ViewLayout
     } else {
         1
     };
-    let conv = app
-        .conversations()
-        .iter()
-        .find(|c| c.path == state.conversation_path);
-    let has_summary = conv.is_some_and(|c| c.summary.is_some());
-    let fits_single_line = conv.is_some_and(|c| header_fits_single_line(c, area.width));
-    let header_height = if has_summary && !fits_single_line {
-        3
-    } else {
-        2
-    };
+    let header_height = view_header(app, state, area.width).height();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -550,185 +605,40 @@ fn render_view_mode(frame: &mut Frame, app: &App, state: &ViewState) {
 }
 
 fn render_view_header(frame: &mut Frame, app: &App, state: &ViewState, area: Rect) {
-    // Find the conversation by path (works for both list and single file mode)
-    let conv = app
-        .conversations()
-        .iter()
-        .find(|c| c.path == state.conversation_path);
-
-    let (
-        project,
-        custom_title,
-        model,
-        msg_count,
-        duration,
-        tokens,
-        timestamp,
-        summary,
-        fits_single,
-    ) = if let Some(conv) = conv {
-        let project = conv.project_name.as_deref().unwrap_or("Unknown");
-        let custom_title = conv.custom_title.clone();
-        let model = conv.model.as_ref().map(|m| format_model_name(m));
-        let msg_count = if conv.message_count == 1 {
-            "1 message".to_string()
-        } else {
-            format!("{} messages", conv.message_count)
-        };
-        // Format conversation duration
-        let duration = conv.duration_minutes.map(format_duration);
-
-        // Calculate header length to determine if long token format fits
-        let custom_title_len = custom_title
-            .as_ref()
-            .map(|t| t.chars().count() + 3)
-            .unwrap_or(0); // + " · "
-        let model_len = model.as_ref().map(|m| m.len() + 3).unwrap_or(0); // + " · "
-        let duration_len = duration.as_ref().map(|d| d.len() + 3).unwrap_or(0); // + " · "
-        let base_len = 2
-            + project.len()
-            + 3
-            + custom_title_len
-            + model_len
-            + msg_count.len()
-            + duration_len
-            + 3
-            + 16; // 16 = timestamp
-
-        let tokens = if conv.total_tokens > 0 {
-            let long_form = format_tokens_long(conv.total_tokens);
-            let short_form = format_tokens(conv.total_tokens);
-            // Use long form if it fits (base + " · " + tokens <= width)
-            if base_len + 3 + long_form.len() <= area.width as usize {
-                Some(long_form)
-            } else {
-                Some(short_form)
+    let header = view_header(app, state, area.width);
+    let summary_style = Style::default().fg(rgb(th().header_summary));
+    let mut spans = vec![Span::raw(HEADER_INDENT)];
+    for (index, (part, text)) in header.parts.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(HEADER_SEPARATOR));
+        }
+        let style = match part {
+            HeaderPart::Project => Style::default().fg(rgb(th().accent)).bold(),
+            HeaderPart::Title => Style::default().fg(rgb(th().custom_title)),
+            HeaderPart::Model => Style::default().fg(rgb(th().model_color)),
+            HeaderPart::Duration => Style::default().fg(rgb(th().duration_color)),
+            HeaderPart::Count | HeaderPart::Tokens | HeaderPart::Timestamp => {
+                Style::default().fg(rgb(th().text_secondary))
             }
-        } else {
-            None
         };
-
-        let timestamp = conv.timestamp.format("%Y-%m-%d %H:%M").to_string();
-        let fits = header_fits_single_line(conv, area.width);
-        (
-            project.to_string(),
-            custom_title,
-            model,
-            msg_count,
-            duration,
-            tokens,
-            timestamp,
-            conv.summary.clone(),
-            fits,
-        )
-    } else {
-        // Fallback if parsing failed
-        let project = state
-            .conversation_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string();
-        (
-            project,
-            None,
-            None,
-            "".to_string(),
-            None,
-            None,
-            "".to_string(),
-            None,
-            true,
-        )
-    };
-
-    // Build header spans for metadata line
-    let build_metadata_spans = |include_summary: bool| {
-        let mut spans = vec![
-            Span::raw("  "),
-            Span::styled(
-                project.clone(),
-                Style::default().fg(rgb(th().accent)).bold(),
-            ),
-        ];
-
-        // Add custom title if present
-        if let Some(ref t) = custom_title {
-            spans.push(Span::raw(" · "));
-            spans.push(Span::styled(
-                t.clone(),
-                Style::default().fg(rgb(th().custom_title)), // Warm gold
-            ));
+        spans.push(Span::styled(text.clone(), style));
+    }
+    let mut lines = Vec::new();
+    match header.summary {
+        Some(summary) if header.summary_inline => {
+            spans.push(Span::raw(HEADER_SEPARATOR));
+            spans.push(Span::styled(summary, summary_style));
+            lines.push(Line::from(spans));
         }
-
-        // Add model if present
-        if let Some(ref m) = model {
-            spans.push(Span::raw(" · "));
-            spans.push(Span::styled(
-                m.clone(),
-                Style::default().fg(rgb(th().model_color)),
-            ));
-        }
-
-        spans.push(Span::raw(" · "));
-        spans.push(Span::styled(
-            msg_count.clone(),
-            Style::default().fg(rgb(th().text_secondary)),
-        ));
-
-        // Add conversation duration if present
-        if let Some(ref d) = duration {
-            spans.push(Span::raw(" · "));
-            spans.push(Span::styled(
-                d.clone(),
-                Style::default().fg(rgb(th().duration_color)),
-            ));
-        }
-
-        // Add tokens if present
-        if let Some(ref t) = tokens {
-            spans.push(Span::raw(" · "));
-            spans.push(Span::styled(
-                t.clone(),
-                Style::default().fg(rgb(th().text_secondary)),
-            ));
-        }
-
-        spans.push(Span::raw(" · "));
-        spans.push(Span::styled(
-            timestamp.clone(),
-            Style::default().fg(rgb(th().text_secondary)),
-        ));
-
-        // Add summary if requested
-        if include_summary && let Some(ref s) = summary {
-            spans.push(Span::raw(" · "));
-            spans.push(Span::styled(
-                s.clone(),
-                Style::default().fg(rgb(th().header_summary)),
-            ));
-        }
-
-        spans
-    };
-
-    // Build header lines
-    let lines = if fits_single && summary.is_some() {
-        // Single line with summary
-        vec![Line::from(build_metadata_spans(true))]
-    } else {
-        // Two lines (or single line without summary)
-        let mut lines = vec![Line::from(build_metadata_spans(false))];
-
-        // Add summary on second line if available
-        if let Some(summary_text) = summary {
+        Some(summary) => {
+            lines.push(Line::from(spans));
             lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(summary_text, Style::default().fg(rgb(th().header_summary))),
+                Span::raw(HEADER_INDENT),
+                Span::styled(summary, summary_style),
             ]));
         }
-        lines
-    };
+        None => lines.push(Line::from(spans)),
+    }
 
     let header = Paragraph::new(lines).block(
         Block::default()
@@ -901,6 +811,13 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
             ],
         });
         hints.push(hint(1, false, "Esc".into(), "clear".into()));
+        // Opening a search hit lands here, and resuming is what comes next.
+        hints.push(hint(
+            2,
+            false,
+            app.keys().resume.short_label(),
+            "resume".into(),
+        ));
     } else {
         hints.extend([
             hint(1, false, "/".into(), "search".into()),
@@ -2241,6 +2158,61 @@ mod tests {
         let line = row_text(&terminal, 0);
         assert!(line.contains("Enter open"), "{line:?}");
         assert!(line.trim_end().ends_with("? help"), "{line:?}");
+    }
+
+    #[test]
+    fn view_header_measures_display_width_not_bytes() {
+        let mut conv = test_conversation();
+        conv.custom_title = None;
+        conv.project_name = Some("proj".to_string());
+        // 20 columns, 40 bytes.
+        conv.summary = Some("é".repeat(20));
+        let path = conv.path.clone();
+        let metadata = ViewHeader::new(Some(&conv), &path, 500);
+        let inline_width = header_width(&metadata.parts) + separated(&"é".repeat(20));
+
+        let fits = ViewHeader::new(Some(&conv), &path, inline_width as u16);
+        assert!(fits.summary_inline, "{fits:?}");
+        assert_eq!(fits.height(), 2);
+
+        let narrower = ViewHeader::new(Some(&conv), &path, inline_width as u16 - 1);
+        assert!(!narrower.summary_inline);
+        assert_eq!(narrower.height(), 3);
+    }
+
+    #[test]
+    fn viewer_status_bar_offers_resume_while_a_search_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conversation = test_conversation();
+        conversation.path = dir.path().join("session.jsonl");
+        let user = serde_json::json!({
+            "type": "user",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "the warming fix"}
+        });
+        std::fs::write(&conversation.path, format!("{user}\n")).unwrap();
+        let mut app = App::new(
+            vec![conversation],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.set_query_for_test("warming");
+        app.enter_view_mode(80);
+        let AppMode::View(state) = app.app_mode() else {
+            unreachable!()
+        };
+        assert!(!state.search_matches.is_empty());
+
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_view_status_bar(frame, &app, state, frame.area()))
+            .unwrap();
+        let line = row_text(&terminal, 0);
+        assert!(line.contains("match 1/1"), "{line:?}");
+        assert!(line.contains("^R resume"), "{line:?}");
     }
 
     #[test]

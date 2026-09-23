@@ -1498,3 +1498,80 @@ fn excluded_entry_kinds_produce_no_lines() {
     assert!(rendered.lines.is_empty());
     assert!(rendered.messages.is_empty());
 }
+
+/// Real Claude transcripts put attachment records and (hidden) thinking
+/// between tool calls; neither draws a line, so neither may split the group.
+fn render_jsonl(lines: &[&str], show_thinking: bool) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let mut options = test_render_options(ToolDisplayMode::Hidden);
+    options.show_thinking = show_thinking;
+    rendered_text(&render_conversation(&path, &options).unwrap())
+}
+
+const BASH_CALL_1: &str = r#"{"type":"assistant","uuid":"a1","timestamp":"2026-09-20T10:00:01Z","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#;
+const BASH_RESULT_1: &str = r#"{"type":"user","uuid":"u2","timestamp":"2026-09-20T10:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#;
+const BASH_CALL_2: &str = r#"{"type":"assistant","uuid":"a2","timestamp":"2026-09-20T10:00:03Z","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pwd"}}]}}"#;
+const BASH_RESULT_2: &str = r#"{"type":"user","uuid":"u3","timestamp":"2026-09-20T10:00:04Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}"#;
+
+#[test]
+fn attachment_records_do_not_split_a_tool_summary() {
+    let attachment = r#"{"type":"attachment","uuid":"x1","timestamp":"2026-09-20T10:00:02Z","attachment":{"type":"total_tokens_reminder","text":"x"}}"#;
+    let text = render_jsonl(
+        &[
+            BASH_CALL_1,
+            BASH_RESULT_1,
+            attachment,
+            BASH_CALL_2,
+            BASH_RESULT_2,
+        ],
+        false,
+    );
+    assert!(text.contains("Ran 2 shell commands"), "{text}");
+    assert!(!text.contains("Ran 1 shell command"), "{text}");
+}
+
+#[test]
+fn thinking_splits_a_tool_summary_only_when_it_is_shown() {
+    let thinking = r#"{"type":"assistant","uuid":"k1","timestamp":"2026-09-20T10:00:02Z","message":{"id":"mk","role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"s"}]}}"#;
+    let entries = [
+        BASH_CALL_1,
+        BASH_RESULT_1,
+        thinking,
+        BASH_CALL_2,
+        BASH_RESULT_2,
+    ];
+
+    let hidden = render_jsonl(&entries, false);
+    assert!(hidden.contains("Ran 2 shell commands"), "{hidden}");
+
+    let shown = render_jsonl(&entries, true);
+    assert_eq!(shown.matches("Ran 1 shell command").count(), 2, "{shown}");
+}
+
+#[test]
+fn tool_summary_names_agents_web_searches_and_other_tools() {
+    let entry = RenderableEntry {
+        entry_index: 0,
+        entry: serde_json::from_str(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"tool_use","id":"t1","name":"Agent","input":{}},
+                {"type":"tool_use","id":"t2","name":"WebSearch","input":{}},
+                {"type":"tool_use","id":"t3","name":"WebSearch","input":{}},
+                {"type":"tool_use","id":"t4","name":"Skill","input":{}},
+                {"type":"tool_use","id":"t5","name":"mcp__claude_ai_Gmail__search_threads","input":{}},
+                {"type":"tool_use","id":"t6","name":"Skill","input":{}}
+            ]}}"#,
+        )
+        .unwrap(),
+    };
+    let rendered =
+        render_parsed_conversation(&[entry], &test_render_options(ToolDisplayMode::Hidden));
+    let text = rendered_text(&rendered);
+
+    assert!(
+        text.contains("Started 1 agent, searched the web 2 times, called Skill ×2, search_threads"),
+        "{text}"
+    );
+}

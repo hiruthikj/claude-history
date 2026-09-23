@@ -372,9 +372,16 @@ fn run() -> Result<()> {
                 "--generate-semantic-cache cannot be combined with --source".to_string(),
             ));
         }
+        // Generation unprotects every entry outside the selected set, so a
+        // workspace-only run would leave other projects' embeddings evictable.
+        if args.local {
+            return Err(AppError::ConfigError(
+                "--generate-semantic-cache cannot be combined with --local".to_string(),
+            ));
+        }
         let mut conversations = history::load_all_conversations(&sources, show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        return semantic_cli::generate_cache(&conversations, args.local);
+        return semantic_cli::generate_cache(&conversations, false);
     }
 
     if args.clear_semantic_cache {
@@ -1815,6 +1822,45 @@ mod agent_command_tests {
             ClaudeResumeAction::CopyToCurrent { cwd_projects_dir }
         );
     }
+
+    /// A transcript whose recorded project no longer exists, resumed (or
+    /// forked) from the directory it already belongs to, must run in place:
+    /// copying it onto itself truncates it.
+    #[test]
+    fn resume_action_runs_in_place_when_cwd_owns_the_transcript_and_project_is_gone() {
+        let cwd = tempfile::tempdir().unwrap();
+        let selected_path = history::claude_projects_dir(ROOT.as_ref(), cwd.path())
+            .join("12345678-1234-4234-9234-123456789abc.jsonl");
+
+        for fork in [false, true] {
+            let action =
+                resolve_claude_resume_action(&selected_path, None, cwd.path(), fork, ROOT.as_ref())
+                    .unwrap();
+            assert_eq!(
+                action,
+                ClaudeResumeAction::Run {
+                    current_dir: cwd.path().to_path_buf()
+                },
+                "fork={fork}"
+            );
+        }
+    }
+
+    #[test]
+    fn copying_session_files_onto_themselves_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "12345678-1234-4234-9234-123456789abc";
+        let jsonl = dir.path().join(format!("{session_id}.jsonl"));
+        std::fs::write(&jsonl, "{\"type\":\"user\"}\n").unwrap();
+
+        let err = copy_session_files(&jsonl, session_id, dir.path(), dir.path()).unwrap_err();
+
+        assert!(err.to_string().contains("same directory"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&jsonl).unwrap(),
+            "{\"type\":\"user\"}\n"
+        );
+    }
 }
 
 fn tui_search_mode(mode: TuiSearchMode) -> ListSearchMode {
@@ -1845,19 +1891,21 @@ fn resolve_claude_resume_action(
         )
     })?;
     let cwd_projects_dir = history::claude_projects_dir(projects_root, cwd);
-    let project_dir = project_path.filter(|p| p.exists() && p.is_dir());
-
-    if project_dir.is_none() || (fork_session && cwd_projects_dir != conv_projects_dir) {
-        return Ok(ClaudeResumeAction::CopyToCurrent { cwd_projects_dir });
-    }
-
+    // The cwd already owns the transcript: run in place. Checked first,
+    // because copying a transcript onto itself truncates it.
     if cwd_projects_dir == conv_projects_dir {
         return Ok(ClaudeResumeAction::Run {
             current_dir: cwd.to_path_buf(),
         });
     }
 
-    let project_dir = project_dir.unwrap();
+    let Some(project_dir) = project_path.filter(|p| p.is_dir()) else {
+        return Ok(ClaudeResumeAction::CopyToCurrent { cwd_projects_dir });
+    };
+    if fork_session {
+        return Ok(ClaudeResumeAction::CopyToCurrent { cwd_projects_dir });
+    }
+
     let project_projects_dir = history::claude_projects_dir(projects_root, project_dir);
     if project_projects_dir == conv_projects_dir {
         Ok(ClaudeResumeAction::Run {
@@ -2025,6 +2073,13 @@ fn copy_session_files(
     source_projects_dir: &Path,
     target_projects_dir: &Path,
 ) -> Result<()> {
+    if same_dir(source_projects_dir, target_projects_dir) {
+        return Err(AppError::ClaudeExecutionError(format!(
+            "refusing to copy a session into the same directory: {}",
+            source_projects_dir.display()
+        )));
+    }
+
     // 1. Copy the .jsonl file
     let target_jsonl = target_projects_dir.join(jsonl_path.file_name().unwrap());
     std::fs::copy(jsonl_path, &target_jsonl).map_err(AppError::Io)?;
@@ -2040,6 +2095,15 @@ fn copy_session_files(
     // Claude Code finds it by session ID, so no copy needed.
 
     Ok(())
+}
+
+/// Both paths name the same directory (after resolving symlinks when both
+/// exist). `std::fs::copy(p, p)` empties `p`, so copies must check this.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {

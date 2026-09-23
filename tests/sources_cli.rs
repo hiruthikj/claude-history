@@ -204,6 +204,10 @@ fn semantic_cache_generation_refuses_a_source_subset() {
     let output = fixture.run(&["--generate-semantic-cache", "--source", "work"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be combined with --source"));
+
+    let output = fixture.run(&["--generate-semantic-cache", "--local"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be combined with --local"));
 }
 
 #[test]

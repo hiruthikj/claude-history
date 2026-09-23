@@ -5,8 +5,17 @@ fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_claude-history"))
 }
 
+/// The built binary under a throwaway `HOME`, so history caches and a
+/// personal `config.toml` never leak in or out of the test.
+fn command() -> Command {
+    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("agent-cli-home");
+    let mut command = Command::new(binary());
+    command.env("HOME", home).env_remove("XDG_DATA_HOME");
+    command
+}
+
 fn run(config: &Path, args: &[&str]) -> Output {
-    Command::new(binary())
+    command()
         .env("CLAUDE_CONFIG_DIR", config)
         .env(
             "PI_CODING_AGENT_SESSION_DIR",
@@ -18,7 +27,7 @@ fn run(config: &Path, args: &[&str]) -> Output {
 }
 
 fn run_pi(config: &Path, sessions: &Path, args: &[&str]) -> Output {
-    Command::new(binary())
+    command()
         .env("CLAUDE_CONFIG_DIR", config)
         .env("PI_CODING_AGENT_SESSION_DIR", sessions)
         .args(args)
@@ -162,7 +171,7 @@ fn omp_sessions_support_agent_search_and_direct_render() {
     );
     assert!(String::from_utf8_lossy(&read.stdout).contains("OMP active answer"));
 
-    let rendered = Command::new(binary())
+    let rendered = command()
         .args(["--no-color", "--render"])
         .arg(fixture)
         .output()
@@ -179,7 +188,7 @@ fn omp_sessions_support_agent_search_and_direct_render() {
 fn direct_render_supports_pi_active_branch() {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi/v3-branched.jsonl");
-    let output = Command::new(binary())
+    let output = command()
         .args(["--no-color", "--render"])
         .arg(path)
         .output()
@@ -529,7 +538,7 @@ fn direct_uuid_and_pi_filename_inputs_preserve_agent_recipes() {
     )
     .unwrap();
     let invoke = |args: &[&str]| {
-        let output = Command::new(binary())
+        let output = command()
             .env("CLAUDE_CONFIG_DIR", config.path())
             .env("PI_CODING_AGENT_DIR", config.path())
             .env_remove("PI_CODING_AGENT_SESSION_DIR")
