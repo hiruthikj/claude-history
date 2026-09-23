@@ -404,10 +404,22 @@ impl App {
         let new_filtered = self.filter_indices(start_idx..end_idx);
         self.filtered.extend(new_filtered);
         // Batches arrive per project, not by time; show newest first while
-        // loading so the top of the list is already the right one.
+        // loading so the top of the list is already the right one. A
+        // selection the user moved stays on its conversation; one still on
+        // the top row stays on the (new) newest.
+        let selected_conversation = self
+            .selected
+            .filter(|&selected| selected > 0)
+            .and_then(|selected| self.filtered.get(selected).copied());
         let conversations = &self.conversations;
         self.filtered
             .sort_by(|&a, &b| conversations[b].timestamp.cmp(&conversations[a].timestamp));
+        if let Some(conversation) = selected_conversation {
+            self.selected = self
+                .filtered
+                .iter()
+                .position(|&index| index == conversation);
+        }
         self.refresh_multiple_sources();
         self.bump_results_version();
 

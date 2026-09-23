@@ -678,7 +678,7 @@ pager = true
 # Example: default_args = ["--dangerously-skip-permissions"]
 
 [keys]
-# Customize keybindings (default: ctrl+r, ctrl+f, f2, ctrl+x, alt+s)
+# Customize keybindings (default: ctrl+r, ctrl+f, f2, ctrl+x, alt+s, alt+p)
 # Supports ctrl+<key>, alt+<key>, single-character keys, and f1-f12
 # rename = "alt+r"
 # fork = "alt+f"

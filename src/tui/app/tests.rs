@@ -2014,4 +2014,18 @@ fn streamed_batches_list_newest_first_while_loading() {
         ]
     );
     assert_eq!(app.selected, Some(0));
+
+    // A row picked while loading stays picked when newer rows sort above it.
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE, 10);
+    let picked = filtered_session_ids(&app)[app.selected.unwrap()].to_string();
+    let mut newest = sort_conversations().pop().unwrap();
+    newest.session_id = "33333333-3333-4333-8333-333333333333".to_string();
+    newest.path = PathBuf::from("/tmp/newest.jsonl");
+    newest.timestamp = Local.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
+    app.append_conversations(vec![newest]);
+    assert_eq!(
+        filtered_session_ids(&app)[0],
+        "33333333-3333-4333-8333-333333333333"
+    );
+    assert_eq!(filtered_session_ids(&app)[app.selected.unwrap()], picked);
 }
