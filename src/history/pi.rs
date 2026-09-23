@@ -61,6 +61,22 @@ pub fn is_omp_file(path: &Path) -> bool {
     parse_omp_file(path).ok().flatten().is_some()
 }
 
+/// Whether the valid records read so far still allow a Pi/OMP session: a
+/// `session` header first, or an OMP `title` slot followed by one.
+fn may_be_session_header(parsed: &[(usize, Value)]) -> bool {
+    let record_type = |index: usize| {
+        parsed
+            .get(index)
+            .map(|(_, value)| value.get("type").and_then(Value::as_str))
+    };
+    match (record_type(0), record_type(1)) {
+        (None, _) => true,
+        (Some(Some("session")), _) => true,
+        (Some(Some("title")), None | Some(Some("session"))) => true,
+        _ => false,
+    }
+}
+
 fn parse_reader(
     reader: impl BufRead,
     expected_source: Option<Source>,
@@ -75,6 +91,12 @@ fn parse_reader(
         match serde_json::from_str::<Value>(&line) {
             Ok(value) => parsed.push((index + 1, value)),
             Err(_) => malformed_lines.push(index + 1),
+        }
+        // Only the first two valid records decide the format (below). Every
+        // Claude transcript comes through here first, so stop as soon as it
+        // cannot be a Pi/OMP session instead of parsing the whole file.
+        if !may_be_session_header(&parsed) {
+            return Ok(None);
         }
     }
 
@@ -729,6 +751,41 @@ mod tests {
             assert_eq!(projection.header.id, id);
             assert_eq!(std::fs::read(fixture(name)).unwrap(), before);
         }
+    }
+
+    /// The header sniff stops after two valid records; junk and blank lines
+    /// before them must still be skipped exactly as the full parse did.
+    #[test]
+    fn format_sniff_skips_leading_junk_and_rejects_claude_early() {
+        let pi = std::fs::read_to_string(fixture("v3-branched.jsonl")).unwrap();
+        let omp = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/omp/v3.jsonl"),
+        )
+        .unwrap();
+        let parse = |text: String| parse_reader(std::io::Cursor::new(text), None).unwrap();
+
+        let pi_with_junk = parse(format!("\nnot json\n{pi}")).unwrap();
+        assert_eq!(
+            pi_with_junk.header.id,
+            "01912345-6789-7abc-8def-0123456789ab"
+        );
+        let omp_with_junk = parse(format!("{{broken\n{omp}")).unwrap();
+        assert_eq!(omp_with_junk.source, Source::Omp);
+
+        let claude = r#"{"type":"user","message":{"role":"user","content":"hi"}}"#;
+        assert!(parse(format!("garbage\n\n{claude}\n")).is_none());
+        // A title slot followed by anything but a session header is not OMP.
+        let title = r#"{"type":"title","title":"t"}"#;
+        assert!(parse(format!("{title}\n{claude}\n")).is_none());
+        // Rejected before reading on: a later line that is not UTF-8 no
+        // longer turns a Claude transcript into an I/O error here.
+        let mut bytes = format!("{claude}\n").into_bytes();
+        bytes.extend([0xff, 0xfe, b'\n']);
+        assert!(
+            parse_reader(std::io::Cursor::new(bytes), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

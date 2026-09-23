@@ -34,7 +34,10 @@
 - Each project gets its own stable colour in the list and viewer (worktrees
   share their repo's), titles are brighter than project names, previews drop
   `**`/backtick markup, and narrow lists give the duration's room to the title
-- `[display] theme = "dark" | "light"` forces a palette when terminal
+- Loading, agent search and opening a conversation spend 30–45% less CPU:
+  Claude transcripts are no longer fully parsed a second time to rule out
+  the Pi/OMP format
+- `[display] theme = "dark" | "light" forces a palette when terminal
   detection guesses wrong
 - `--generate-semantic-cache` rejects `--local`, which would have left other
   projects' embeddings evictable
