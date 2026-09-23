@@ -9,6 +9,12 @@
 - Identifier queries with underscores (`api_key`) are ranked by relevance
   instead of only by recency
 - The history cache is rebuilt once on first run after upgrading
+- `[[sources]]` config merges several history roots into one list, including
+  more than one Claude config dir; sessions resume, fork and delete in their
+  own source, `Shift+Tab` narrows the list to one source, and `--source <name>`
+  narrows every mode and the agent commands
+- `Alt+S` (`[keys].sort`) flips list hits between best match and newest first;
+  newest-first now also applies to semantic results
 
 ## v0.1.75 (2026-09-16)
 

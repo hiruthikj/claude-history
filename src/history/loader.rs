@@ -9,7 +9,8 @@ use super::parser::process_conversation_file;
 use super::path::{
     decode_project_dir_name, decode_project_dir_name_to_path, format_short_name_from_path,
 };
-use super::{Conversation, LoaderMessage, Project};
+use super::sources::{SourceRoot, SourceSet};
+use super::{Conversation, LoaderMessage, Project, Source};
 use crate::claude::{LogEntry, extract_search_text_from_user, parse_agent_progress};
 use crate::cli::DebugLevel;
 use crate::debug;
@@ -20,7 +21,8 @@ use std::collections::HashMap;
 use std::fs::{File, read_dir};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::SystemTime;
 
@@ -46,106 +48,27 @@ pub struct DeleteEmptySummary {
     pub deleted: usize,
 }
 
-/// Load conversations from ALL projects globally
-#[allow(dead_code)]
+/// Load conversations from every root in `sources`.
 pub fn load_all_conversations(
+    sources: &SourceSet,
     show_last: bool,
     debug_level: Option<DebugLevel>,
 ) -> Result<Vec<Conversation>> {
-    let pi_root = super::pi_loader::session_root().ok();
-    let pi_available = pi_root.as_ref().is_some_and(|root| root.path.exists());
-    let (mut pi_conversations, pi_error) =
-        match super::pi_loader::load_pi_conversations(show_last, debug_level) {
-            Ok(conversations) => (conversations, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
-    let omp_root = super::omp_loader::session_root().ok();
-    let omp_available = omp_root.as_ref().is_some_and(|root| root.path.exists());
-    let (mut omp_conversations, omp_error) =
-        match super::omp_loader::load_omp_conversations(show_last, debug_level) {
-            Ok(conversations) => (conversations, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
-    let auxiliary_usable =
-        (pi_available && pi_error.is_none()) || (omp_available && omp_error.is_none());
-    let root = match super::get_claude_projects_root() {
-        Ok(root) => root,
-        Err(error) => {
-            if auxiliary_usable {
-                pi_conversations.append(&mut omp_conversations);
-                finalize_conversations(&mut pi_conversations);
-                return Ok(pi_conversations);
-            }
-            return Err(pi_error.or(omp_error).unwrap_or(error));
-        }
-    };
-    if !root.exists() {
-        if auxiliary_usable {
-            pi_conversations.append(&mut omp_conversations);
-            return Ok(pi_conversations);
-        }
-        if let Some(error) = pi_error.or(omp_error) {
-            return Err(error);
-        }
-        return Err(AppError::ProjectsDirNotFound(root.display().to_string()));
-    }
-    if let Some(error) = pi_error {
-        debug::warn(debug_level, &format!("Failed to load Pi history: {error}"));
-    }
-    if let Some(error) = omp_error {
-        debug::warn(debug_level, &format!("Failed to load OMP history: {error}"));
-    }
-    let projects = list_projects(&root)?;
-
+    let collected = std::sync::Mutex::new(Vec::new());
+    load_roots(
+        sources,
+        show_last,
+        debug_level,
+        &|mut batch| collected.lock().unwrap().append(&mut batch),
+        &|| {},
+    )?;
+    let mut conversations = collected.into_inner().unwrap();
+    finalize_conversations(&mut conversations);
     debug::info(
         debug_level,
-        &format!("Loading global history from {} projects", projects.len()),
+        &format!("Total global conversations loaded: {}", conversations.len()),
     );
-
-    // Load conversations from all projects in parallel
-    let mut all_conversations: Vec<Conversation> = projects
-        .par_iter()
-        .flat_map(|project| {
-            let project_dir = root.join(&project.name);
-            match load_conversations(&project_dir, show_last, &project.name, debug_level) {
-                Ok(mut convs) => {
-                    // Fallback path for old JSONL files without cwd field
-                    let fallback_path = decode_project_dir_name_to_path(&project.name);
-
-                    // Inject project info into each conversation
-                    for conv in &mut convs {
-                        // Prefer the cwd extracted from the JSONL file (accurate), fall back to decoded path
-                        let project_path =
-                            conv.cwd.clone().unwrap_or_else(|| fallback_path.clone());
-                        conv.project_name = Some(format_short_name_from_path(&project_path));
-                        conv.project_path = Some(project_path);
-                    }
-                    convs
-                }
-                Err(e) => {
-                    debug::warn(
-                        debug_level,
-                        &format!("Failed to load project {}: {}", project.display_name, e),
-                    );
-                    Vec::new()
-                }
-            }
-        })
-        .collect();
-
-    all_conversations.append(&mut pi_conversations);
-    all_conversations.append(&mut omp_conversations);
-    finalize_conversations(&mut all_conversations);
-
-    debug::info(
-        debug_level,
-        &format!(
-            "Total global conversations loaded: {}",
-            all_conversations.len()
-        ),
-    );
-
-    Ok(all_conversations)
+    Ok(conversations)
 }
 
 fn finalize_conversations(conversations: &mut Vec<Conversation>) {
@@ -170,6 +93,7 @@ fn deduplicate_conversations(conversations: &mut Vec<Conversation>) {
 /// Start loading all conversations in the background
 /// Returns a receiver that will receive LoaderMessage updates
 pub fn load_all_conversations_streaming(
+    sources: SourceSet,
     show_last: bool,
     debug_level: Option<DebugLevel>,
     time: TimeFilter,
@@ -177,159 +101,208 @@ pub fn load_all_conversations_streaming(
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        load_all_streaming_inner(tx, show_last, debug_level, time);
+        // Senders are not Sync; the batch callbacks run on rayon workers.
+        let tx = std::sync::Mutex::new(tx);
+        let send = |message| {
+            let _ = tx.lock().unwrap().send(message);
+        };
+        let result = load_roots(
+            &sources,
+            show_last,
+            debug_level,
+            &|mut batch| {
+                // Filtered here rather than inside the loaders, whose caches
+                // are rebuilt from what they return — dropping conversations
+                // earlier would evict their cache entries and force a
+                // re-parse on every later run.
+                if time.is_active() {
+                    batch.retain(|conv| time.matches(conv.timestamp));
+                }
+                if !batch.is_empty() {
+                    send(LoaderMessage::Batch(batch));
+                }
+            },
+            &|| send(LoaderMessage::ProjectError),
+        );
+        send(match result {
+            Ok(()) => LoaderMessage::Done,
+            Err(error) => LoaderMessage::Fatal(error),
+        });
     });
 
     rx
 }
 
-fn load_all_streaming_inner(
-    tx: Sender<LoaderMessage>,
+/// Loads every root, handing batches to `emit` as they are ready (Claude
+/// roots one project at a time). Missing roots are skipped; the call fails
+/// only when no root could be loaded at all, with the first real failure, or
+/// else "not found" for the first Claude root.
+fn load_roots(
+    sources: &SourceSet,
     show_last: bool,
     debug_level: Option<DebugLevel>,
-    time: TimeFilter,
-) {
-    let pi_root = super::pi_loader::session_root().ok();
-    let pi_available = pi_root.as_ref().is_some_and(|root| root.path.exists());
-    let (mut pi_conversations, pi_error) =
-        match super::pi_loader::load_pi_conversations(show_last, debug_level) {
-            Ok(conversations) => (conversations, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
-    let omp_root = super::omp_loader::session_root().ok();
-    let omp_available = omp_root.as_ref().is_some_and(|root| root.path.exists());
-    let (mut omp_conversations, omp_error) =
-        match super::omp_loader::load_omp_conversations(show_last, debug_level) {
-            Ok(conversations) => (conversations, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
-    let auxiliary_usable =
-        (pi_available && pi_error.is_none()) || (omp_available && omp_error.is_none());
-    pi_conversations.append(&mut omp_conversations);
-    deduplicate_conversations(&mut pi_conversations);
-    if time.is_active() {
-        pi_conversations.retain(|conversation| time.matches(conversation.timestamp));
-    }
-    if !pi_conversations.is_empty() {
-        let _ = tx.send(LoaderMessage::Batch(pi_conversations));
-    }
-
-    let root = match super::get_claude_projects_root() {
-        Ok(root) => root,
-        Err(error) => {
-            if auxiliary_usable {
-                let _ = tx.send(LoaderMessage::Done);
-            } else {
-                let _ = tx.send(LoaderMessage::Fatal(
-                    pi_error.or(omp_error).unwrap_or(error),
-                ));
-            }
-            return;
-        }
-    };
-
-    if !root.exists() {
-        if auxiliary_usable {
-            let _ = tx.send(LoaderMessage::Done);
-        } else {
-            let error = pi_error
-                .or(omp_error)
-                .unwrap_or_else(|| AppError::ProjectsDirNotFound(root.display().to_string()));
-            let _ = tx.send(LoaderMessage::Fatal(error));
-        }
-        return;
-    }
-
-    if let Some(error) = pi_error {
-        debug::warn(debug_level, &format!("Failed to load Pi history: {error}"));
-        let _ = tx.send(LoaderMessage::ProjectError);
-    }
-    if let Some(error) = omp_error {
-        debug::warn(debug_level, &format!("Failed to load OMP history: {error}"));
-        let _ = tx.send(LoaderMessage::ProjectError);
-    }
-
-    let projects = match list_projects(&root) {
-        Ok(p) => p,
-        Err(error) => {
-            if auxiliary_usable {
-                let _ = tx.send(LoaderMessage::Done);
-            } else {
-                let _ = tx.send(LoaderMessage::Fatal(error));
-            }
-            return;
-        }
-    };
-
-    debug::info(
-        debug_level,
-        &format!("Loading global history from {} projects", projects.len()),
-    );
-
-    // Process projects in parallel and send batches as they complete
-    projects.par_iter().for_each(|project| {
-        let project_dir = root.join(&project.name);
-
-        match load_conversations(&project_dir, show_last, &project.name, debug_level) {
-            Ok(mut convs) => {
-                if convs.is_empty() {
-                    return;
+    emit: &(dyn Fn(Vec<Conversation>) + Sync),
+    on_error: &(dyn Fn() + Sync),
+) -> Result<()> {
+    let mut loaded_any = false;
+    let mut first_error = None;
+    let mut first_missing_claude = None;
+    for root in sources.roots() {
+        match load_root(root, show_last, debug_level, emit, on_error) {
+            Ok(RootLoad::Loaded) => loaded_any = true,
+            Ok(RootLoad::Missing) => {
+                debug::info(
+                    debug_level,
+                    &format!(
+                        "No {} history at {}",
+                        root.kind.label(),
+                        root.projects_dir().display()
+                    ),
+                );
+                if root.kind == Source::Claude && first_missing_claude.is_none() {
+                    first_missing_claude = Some(root.projects_dir());
                 }
-
-                let fallback_path = decode_project_dir_name_to_path(&project.name);
-
-                for conv in &mut convs {
-                    let project_path = conv.cwd.clone().unwrap_or_else(|| fallback_path.clone());
-                    conv.project_name = Some(format_short_name_from_path(&project_path));
-                    conv.project_path = Some(project_path);
-                }
-
-                // Filtered here rather than inside load_conversations, whose
-                // per-project cache is rebuilt from the vec it returns —
-                // dropping conversations earlier would evict their cache
-                // entries and force a re-parse on every later run.
-                if time.is_active() {
-                    convs.retain(|conv| time.matches(conv.timestamp));
-                    if convs.is_empty() {
-                        return;
-                    }
-                }
-
-                // Send batch, ignore error if receiver dropped
-                let _ = tx.send(LoaderMessage::Batch(convs));
             }
-            Err(e) => {
+            Err(error) => {
                 debug::warn(
                     debug_level,
-                    &format!("Failed to load project {}: {}", project.display_name, e),
+                    &format!(
+                        "Failed to load {} history at {}: {error}",
+                        root.label(),
+                        root.dir.display()
+                    ),
                 );
-                let _ = tx.send(LoaderMessage::ProjectError);
+                on_error();
+                first_error.get_or_insert(error);
             }
         }
-    });
-
-    let _ = tx.send(LoaderMessage::Done);
+    }
+    if loaded_any {
+        return Ok(());
+    }
+    Err(first_error.unwrap_or_else(|| match first_missing_claude {
+        Some(dir) => AppError::ProjectsDirNotFound(dir.display().to_string()),
+        None => AppError::NoHistoryFound(describe_roots(sources)),
+    }))
 }
 
-/// Find a session JSONL file by UUID across all projects.
-/// Returns the path to the `.jsonl` file if found.
-pub fn find_jsonl_by_uuid(uuid: &str) -> Result<Option<PathBuf>> {
-    let matches = find_all_jsonl_by_uuid(uuid)?;
-    Ok(matches.into_iter().next())
+fn describe_roots(sources: &SourceSet) -> String {
+    if sources.roots().is_empty() {
+        return "any configured source".to_string();
+    }
+    sources
+        .roots()
+        .iter()
+        .map(|root| root.projects_dir().display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// Find all session JSONL files by UUID across all projects.
+enum RootLoad {
+    Loaded,
+    Missing,
+}
+
+fn load_root(
+    root: &Arc<SourceRoot>,
+    show_last: bool,
+    debug_level: Option<DebugLevel>,
+    emit: &(dyn Fn(Vec<Conversation>) + Sync),
+    on_error: &(dyn Fn() + Sync),
+) -> Result<RootLoad> {
+    let stamp = |mut conversations: Vec<Conversation>| {
+        for conversation in &mut conversations {
+            conversation.origin = Some(root.clone());
+        }
+        conversations
+    };
+    let conversations = match root.kind {
+        Source::Pi => {
+            let session_root = root.pi_root();
+            if !session_root.path.exists() {
+                return Ok(RootLoad::Missing);
+            }
+            super::pi_loader::load_pi_conversations(&session_root, show_last, debug_level)?
+        }
+        Source::Omp => {
+            let session_root = root.omp_root();
+            if !session_root.path.exists() {
+                return Ok(RootLoad::Missing);
+            }
+            super::omp_loader::load_omp_conversations(&session_root, show_last, debug_level)?
+        }
+        Source::Claude => {
+            let projects_root = root.projects_dir();
+            if !projects_root.exists() {
+                return Ok(RootLoad::Missing);
+            }
+            let projects = list_projects(&projects_root)?;
+            debug::info(
+                debug_level,
+                &format!(
+                    "Loading {} projects from {}",
+                    projects.len(),
+                    projects_root.display()
+                ),
+            );
+            let cache_dir = cache::claude_cache_dir(&root.dir);
+            projects.par_iter().for_each(|project| {
+                let project_dir = projects_root.join(&project.name);
+                match load_conversations(
+                    &project_dir,
+                    cache_dir.as_deref(),
+                    show_last,
+                    &project.name,
+                    debug_level,
+                ) {
+                    Ok(convs) if !convs.is_empty() => emit(stamp(convs)),
+                    Ok(_) => {}
+                    Err(e) => {
+                        debug::warn(
+                            debug_level,
+                            &format!("Failed to load project {}: {}", project.display_name, e),
+                        );
+                        on_error();
+                    }
+                }
+            });
+            return Ok(RootLoad::Loaded);
+        }
+    };
+    if !conversations.is_empty() {
+        emit(stamp(conversations));
+    }
+    Ok(RootLoad::Loaded)
+}
+
+/// Find a Claude session JSONL file by UUID across every Claude root.
+/// Returns the first match with the root that owns it.
+pub fn find_jsonl_by_uuid(
+    sources: &SourceSet,
+    uuid: &str,
+) -> Result<Option<(PathBuf, Arc<SourceRoot>)>> {
+    for root in sources.of_kind(Source::Claude) {
+        if let Some(path) = find_all_jsonl_by_uuid(&root.projects_dir(), uuid)?
+            .into_iter()
+            .next()
+        {
+            return Ok(Some((path, root.clone())));
+        }
+    }
+    Ok(None)
+}
+
+/// Find all session JSONL files by UUID across all projects of one root.
 /// A session may exist in multiple project directories due to cross-project forking.
-fn find_all_jsonl_by_uuid(uuid: &str) -> Result<Vec<PathBuf>> {
-    let root = super::get_claude_projects_root()?;
-    if !root.exists() {
+fn find_all_jsonl_by_uuid(projects_root: &Path, uuid: &str) -> Result<Vec<PathBuf>> {
+    if !projects_root.exists() {
         return Ok(Vec::new());
     }
 
     let filename = format!("{}.jsonl", uuid);
     let mut matches = Vec::new();
 
-    for entry in read_dir(&root)? {
+    for entry in read_dir(projects_root)? {
         let entry = entry?;
         let project_dir = entry.path();
         if !project_dir.is_dir() {
@@ -344,16 +317,24 @@ fn find_all_jsonl_by_uuid(uuid: &str) -> Result<Vec<PathBuf>> {
     Ok(matches)
 }
 
-/// Delete a session by UUID across all projects.
-/// Removes both the .jsonl file and the session subdirectory (tool-results/, subagents/).
-/// Returns the number of files deleted.
-pub fn delete_session_by_uuid(uuid: &str) -> Result<usize> {
+/// Delete a Claude session by UUID in the given roots: every copy of it
+/// (cross-project forks), plus each copy's session subdirectory
+/// (tool-results/, subagents/). Returns the number of transcripts deleted.
+pub fn delete_session_by_uuid<'a>(
+    roots: impl IntoIterator<Item = &'a Arc<SourceRoot>>,
+    uuid: &str,
+) -> Result<usize> {
     // Validate format to prevent path traversal
     if uuid.is_empty() || !uuid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err(AppError::SessionNotFound(uuid.to_owned()));
     }
 
-    let matches = find_all_jsonl_by_uuid(uuid)?;
+    let mut matches = Vec::new();
+    for root in roots {
+        if root.kind == Source::Claude {
+            matches.extend(find_all_jsonl_by_uuid(&root.projects_dir(), uuid)?);
+        }
+    }
     if matches.is_empty() {
         return Err(AppError::SessionNotFound(uuid.to_owned()));
     }
@@ -375,10 +356,27 @@ pub fn delete_session_by_uuid(uuid: &str) -> Result<usize> {
 }
 
 pub fn delete_empty_transcripts(
+    sources: &SourceSet,
     scope: DeleteEmptyScope,
     delete: bool,
 ) -> Result<DeleteEmptySummary> {
-    let candidates = find_empty_transcripts(scope)?;
+    let projects_roots = sources
+        .of_kind(Source::Claude)
+        .map(|root| root.projects_dir())
+        .collect::<Vec<_>>();
+    let Some(first) = projects_roots.first() else {
+        return Err(AppError::ConfigError(
+            "delete-empty needs a Claude source".to_string(),
+        ));
+    };
+    if !projects_roots.iter().any(|root| root.exists()) {
+        return Err(AppError::ProjectsDirNotFound(first.display().to_string()));
+    }
+    let mut candidates = Vec::new();
+    for projects_root in projects_roots.iter().filter(|root| root.exists()) {
+        candidates.extend(find_empty_transcripts(projects_root, scope)?);
+    }
+
     let mut deleted = 0;
 
     if delete {
@@ -400,14 +398,9 @@ pub fn delete_empty_transcripts(
     })
 }
 
-fn find_empty_transcripts(scope: DeleteEmptyScope) -> Result<Vec<EmptyTranscript>> {
-    let root = super::get_claude_projects_root()?;
-    if !root.exists() {
-        return Err(AppError::ProjectsDirNotFound(root.display().to_string()));
-    }
-
+fn find_empty_transcripts(root: &Path, scope: DeleteEmptyScope) -> Result<Vec<EmptyTranscript>> {
     let projects = match scope {
-        DeleteEmptyScope::All => list_projects(&root)?,
+        DeleteEmptyScope::All => list_projects(root)?,
         DeleteEmptyScope::Local => {
             let current_dir = std::env::current_dir()?;
             let project_dir_name = super::convert_path_to_project_dir_name(&current_dir);
@@ -584,12 +577,15 @@ pub fn list_projects(root: &Path) -> Result<Vec<Project>> {
 /// Find and process all conversation files in one pass, using per-project cache
 pub fn load_conversations(
     projects_dir: &Path,
+    cache_dir: Option<&Path>,
     show_last: bool,
     project_dir_name: &str,
     debug_level: Option<DebugLevel>,
 ) -> Result<Vec<Conversation>> {
     // Load existing cache for this project
-    let cached_entries = cache::read_project_cache(project_dir_name).unwrap_or_default();
+    let cached_entries = cache_dir
+        .and_then(|dir| cache::read_project_cache(dir, project_dir_name))
+        .unwrap_or_default();
 
     // Find all JSONL files and capture metadata in one pass
     let mut files_with_meta = Vec::new();
@@ -770,7 +766,9 @@ pub fn load_conversations(
             }
         }
 
-        cache::write_project_cache(project_dir_name, new_cache);
+        if let Some(dir) = cache_dir {
+            cache::write_project_cache(dir, project_dir_name, new_cache);
+        }
     }
 
     debug::info(

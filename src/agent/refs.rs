@@ -66,6 +66,9 @@ pub struct AgentConversationKey {
     pub session_filename: String,
     pub session_id: String,
     pub path: PathBuf,
+    /// Name of the `[[sources]]` entry the transcript came from; emitted as
+    /// `origin=` and never part of the ref digest.
+    pub origin: Option<String>,
 }
 
 impl AgentConversationKey {
@@ -84,6 +87,7 @@ impl AgentConversationKey {
             project_dir_name: project_dir_name.into(),
             session_filename,
             path,
+            origin: None,
         }
     }
 
@@ -129,6 +133,10 @@ impl AgentConversationKey {
             session_filename,
             session_id: conversation.session_id.clone(),
             path: conversation.path.clone(),
+            origin: conversation
+                .origin
+                .as_ref()
+                .and_then(|origin| origin.name.clone()),
         })
     }
 
@@ -416,15 +424,6 @@ fn finish_resolution(
     }
 }
 
-pub fn conversation_keys_from_conversations(
-    conversations: &[Conversation],
-) -> Result<Vec<AgentConversationKey>> {
-    conversations
-        .iter()
-        .map(AgentConversationKey::from_conversation)
-        .collect()
-}
-
 fn validate_conversation_ref(reference: &str) -> Result<ConversationRefInput> {
     if let Some(hex) = reference.strip_prefix("ch_") {
         if hex.len() < MIN_PREFIX_HEX_LEN {
@@ -561,6 +560,7 @@ mod tests {
     #[test]
     fn pi_refs_include_source_project_and_header_session_identity() {
         let pi = AgentConversationKey {
+            origin: None,
             source: Source::Pi,
             project_dir_name: "/tmp/project".to_owned(),
             session_filename: "2024_custom_id_with_underscores.jsonl".to_owned(),
@@ -596,6 +596,7 @@ mod tests {
     #[test]
     fn pi_refs_distinguish_duplicate_session_ids_in_one_project() {
         let first = AgentConversationKey {
+            origin: None,
             source: Source::Pi,
             project_dir_name: "/tmp/project".to_owned(),
             session_filename: "first.jsonl".to_owned(),

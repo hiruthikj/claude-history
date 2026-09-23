@@ -538,6 +538,7 @@ pub fn process_conversation_reader<R: BufRead>(
     };
 
     Ok(Some(Conversation {
+        origin: None,
         source: super::Source::Claude,
         session_id: path
             .file_stem()

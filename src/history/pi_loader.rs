@@ -22,6 +22,13 @@ pub fn session_root() -> Result<PiSessionRoot> {
     )
 }
 
+/// The session root for an explicitly configured Pi agent dir: its
+/// `settings.json` `sessionDir` if set, else `<dir>/sessions`. Session-dir
+/// environment overrides do not apply to a configured source.
+pub fn session_root_for_agent_dir(agent_dir: PathBuf) -> Result<PiSessionRoot> {
+    session_root_from(Some(agent_dir), None, home::home_dir(), None)
+}
+
 fn session_root_from(
     agent_override: Option<PathBuf>,
     session_override: Option<PathBuf>,
@@ -132,11 +139,11 @@ fn collect_jsonl(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 pub fn load_pi_conversations(
+    root: &PiSessionRoot,
     show_last: bool,
     debug_level: Option<DebugLevel>,
 ) -> Result<Vec<Conversation>> {
-    let root = session_root()?;
-    let files = discover_files(&root)?;
+    let files = discover_files(root)?;
     let cached = super::cache::read_pi_cache(&root.path).unwrap_or_default();
     let mut updated_cache = std::collections::HashMap::new();
     let mut conversations = Vec::new();

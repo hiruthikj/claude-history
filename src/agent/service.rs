@@ -90,6 +90,8 @@ pub(crate) struct AgentSettings {
     /// config can reveal but never hide.
     pub visibility: ContentVisibility,
     pub exclude_projects: Vec<String>,
+    /// History roots after `--source`; set by the caller of `resolve`.
+    pub sources: history::SourceSet,
 }
 
 impl AgentSettings {
@@ -141,6 +143,7 @@ impl AgentSettings {
             scope: configured_scope(flags.local, flags.all, &agent),
             visibility,
             exclude_projects: agent.exclude_projects,
+            sources: history::SourceSet::default(),
         }
     }
 
@@ -221,13 +224,13 @@ pub struct AgentService {
     transcript_parse_count: std::cell::Cell<usize>,
 }
 
-pub fn execute(command: AgentCommand) -> Result<String> {
-    AgentService::default().execute(command)
+pub fn execute(command: AgentCommand, source_filters: &[String]) -> Result<String> {
+    AgentService::default().execute(command, source_filters)
 }
 
 impl AgentService {
-    pub fn execute(&mut self, command: AgentCommand) -> Result<String> {
-        self.execute_inner(command)
+    pub fn execute(&mut self, command: AgentCommand, source_filters: &[String]) -> Result<String> {
+        self.execute_inner(command, source_filters)
             .and_then(ensure_complete_compact_output)
             .map_err(|error| {
                 let error = structured_agent_error(error);
@@ -239,8 +242,16 @@ impl AgentService {
             })
     }
 
-    fn execute_inner(&mut self, command: AgentCommand) -> Result<String> {
-        let settings = AgentSettings::resolve(&command, config::load_config()?);
+    fn execute_inner(
+        &mut self,
+        command: AgentCommand,
+        source_filters: &[String],
+    ) -> Result<String> {
+        let config = config::load_config()?;
+        let sources =
+            history::SourceSet::resolve_selected(config.sources.as_deref(), source_filters)?;
+        let mut settings = AgentSettings::resolve(&command, config);
+        settings.sources = sources;
         match command {
             AgentCommand::Search(args) => self.run_search(&args, &settings),
             AgentCommand::Within(args) => self.run_within(&args, &settings),
@@ -280,7 +291,7 @@ impl AgentService {
         // Resolved before loading so an inverted range fails without paying for
         // a full corpus parse.
         let time = args.time.resolve()?;
-        let mut conversations = history::load_all_conversations(false, None)?;
+        let mut conversations = history::load_all_conversations(&settings.sources, false, None)?;
         conversations.retain(|conversation| {
             !project_is_excluded(&conversation.path, &settings.exclude_projects)
                 && time.matches(conversation.timestamp)
@@ -310,7 +321,7 @@ impl AgentService {
             budget: settings.budget,
         };
         let (mut keys, mut base_warnings) =
-            discover_agent_keys(current_project_dir_name.as_deref())?;
+            discover_agent_keys(&settings.sources, current_project_dir_name.as_deref())?;
         keys.retain(|key| !project_is_excluded(&key.path, &settings.exclude_projects));
         if time.is_active() {
             // Key discovery walks the projects directory independently, so
@@ -442,8 +453,8 @@ impl AgentService {
     }
 
     fn run_within(&self, args: &cli::AgentWithinArgs, settings: &AgentSettings) -> Result<String> {
-        let (keys, _) = discover_agent_keys(None)?;
-        let resolved = resolve_agent_conversation_arg(&args.conversation, Some(&keys))?;
+        let (keys, _) = discover_agent_keys(&settings.sources, None)?;
+        let resolved = resolve_agent_conversation_arg(&args.conversation, &keys)?;
         let transcript = self
             .load_transcript(&resolved.key.path)
             .map_err(|error| target_error(error, &resolved))?;
@@ -504,9 +515,44 @@ impl AgentService {
 }
 
 fn discover_agent_keys(
+    sources: &history::SourceSet,
     project_filter: Option<&str>,
 ) -> Result<(Vec<agent::refs::AgentConversationKey>, Vec<AgentWarning>)> {
-    let root = history::get_claude_projects_root().map_err(structured_agent_error)?;
+    let mut keys = Vec::new();
+    let mut warnings = Vec::new();
+    for root in sources.roots() {
+        match root.kind {
+            history::Source::Claude => {
+                discover_claude_keys(root, project_filter, &mut keys, &mut warnings)?
+            }
+            history::Source::Pi => discover_pi_keys(root, project_filter, &mut keys),
+            history::Source::Omp => discover_omp_keys(root, project_filter, &mut keys),
+        }
+    }
+    let any_claude_root = sources
+        .of_kind(history::Source::Claude)
+        .any(|root| root.projects_dir().exists());
+    if keys.is_empty() && !any_claude_root {
+        let location = sources
+            .primary_claude()
+            .map(|root| root.projects_dir().to_string_lossy().into_owned());
+        return Err(AgentError::io(
+            location.as_deref(),
+            "no Claude, Pi, or OMP history storage is available",
+        )
+        .into());
+    }
+    keys.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok((keys, warnings))
+}
+
+fn discover_claude_keys(
+    source_root: &history::SourceRoot,
+    project_filter: Option<&str>,
+    keys: &mut Vec<agent::refs::AgentConversationKey>,
+    warnings: &mut Vec<AgentWarning>,
+) -> Result<()> {
+    let root = source_root.projects_dir();
     let projects = if root.exists() {
         std::fs::read_dir(&root)
             .map_err(|error| {
@@ -519,8 +565,6 @@ fn discover_agent_keys(
     } else {
         Vec::new()
     };
-    let mut keys = Vec::new();
-    let mut warnings = Vec::new();
     for project in projects {
         let project = match project {
             Ok(project) => project,
@@ -583,17 +627,21 @@ fn discover_agent_keys(
             if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
                 && !filename.starts_with("agent-")
             {
-                keys.push(agent::refs::AgentConversationKey::new(
-                    project_name,
-                    filename,
-                    path,
-                ));
+                let mut key = agent::refs::AgentConversationKey::new(project_name, filename, path);
+                key.origin = source_root.name.clone();
+                keys.push(key);
             }
         }
     }
-    if let Ok(pi_root) = history::pi_loader::session_root()
-        && let Ok(pi_files) = history::pi_loader::discover_files(&pi_root)
-    {
+    Ok(())
+}
+
+fn discover_pi_keys(
+    source_root: &history::SourceRoot,
+    project_filter: Option<&str>,
+    keys: &mut Vec<agent::refs::AgentConversationKey>,
+) {
+    if let Ok(pi_files) = history::pi_loader::discover_files(&source_root.pi_root()) {
         let current = std::env::current_dir()
             .ok()
             .map(|path| path.canonicalize().unwrap_or(path));
@@ -636,12 +684,18 @@ fn discover_agent_keys(
                 session_filename: filename.to_owned(),
                 session_id: projection.header.id,
                 path,
+                origin: source_root.name.clone(),
             });
         }
     }
-    if let Ok(omp_root) = history::omp_loader::session_root()
-        && let Ok(omp_files) = history::omp_loader::discover_files(&omp_root)
-    {
+}
+
+fn discover_omp_keys(
+    source_root: &history::SourceRoot,
+    project_filter: Option<&str>,
+    keys: &mut Vec<agent::refs::AgentConversationKey>,
+) {
+    if let Ok(omp_files) = history::omp_loader::discover_files(&source_root.omp_root()) {
         let current = std::env::current_dir()
             .ok()
             .map(|path| path.canonicalize().unwrap_or(path));
@@ -681,18 +735,10 @@ fn discover_agent_keys(
                 session_filename: filename.to_owned(),
                 session_id: projection.header.id,
                 path,
+                origin: source_root.name.clone(),
             });
         }
     }
-    if keys.is_empty() && !root.exists() {
-        return Err(AgentError::io(
-            Some(&root.to_string_lossy()),
-            "no Claude, Pi, or OMP history storage is available",
-        )
-        .into());
-    }
-    keys.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok((keys, warnings))
 }
 
 fn warnings_for_skipped_transcripts(
@@ -796,6 +842,7 @@ fn conversation_from_agent_transcript(
         .unwrap_or_else(|_| chrono::Local::now());
     let semantic_route_text = history::semantic_route_text(&full_text, "");
     history::Conversation {
+        origin: None,
         source,
         session_id: transcript
             .path
@@ -1003,6 +1050,7 @@ fn stripped_semantic_conversation(
     semantic_turn_ranges: Vec<crate::history::MessageRange>,
 ) -> history::Conversation {
     history::Conversation {
+        origin: None,
         source: conversation.source,
         session_id: conversation.session_id.clone(),
         path,
@@ -1449,11 +1497,11 @@ impl AgentService {
         let keys = match keys {
             Some(keys) => keys,
             None => {
-                discovered = discover_agent_keys(None)?.0;
+                discovered = discover_agent_keys(&settings.sources, None)?.0;
                 &discovered
             }
         };
-        let (mut resolved_refs, focus) = resolve_agent_read_args(args, Some(keys))?;
+        let (mut resolved_refs, focus) = resolve_agent_read_args(args, keys)?;
         let options = settings.protocol_options();
         let transcripts = resolved_refs
             .iter()
@@ -1533,11 +1581,11 @@ impl AgentService {
         let keys = match keys {
             Some(keys) => keys,
             None => {
-                discovered = discover_agent_keys(None)?.0;
+                discovered = discover_agent_keys(&settings.sources, None)?.0;
                 &discovered
             }
         };
-        let resolved = resolve_agent_conversation_arg(&args.conversation, Some(keys))?;
+        let resolved = resolve_agent_conversation_arg(&args.conversation, keys)?;
         let transcript = self
             .load_transcript(&resolved.key.path)
             .map_err(|error| target_error(error, &resolved))?;
@@ -1553,7 +1601,7 @@ impl AgentService {
 
 pub(crate) fn resolve_agent_read_args(
     args: &AgentReadArgs,
-    keys: Option<&[agent::refs::AgentConversationKey]>,
+    keys: &[agent::refs::AgentConversationKey],
 ) -> Result<(ResolvedReadRefs, Option<agent::refs::FocusRef>)> {
     let refs = args
         .refs
@@ -1575,14 +1623,6 @@ pub(crate) fn resolve_agent_read_args(
                 .to_string(),
         ));
     }
-    let loaded_keys;
-    let keys = if let Some(keys) = keys {
-        keys
-    } else {
-        let conversations = history::load_all_conversations(false, None)?;
-        loaded_keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
-        &loaded_keys
-    };
     let resolved_refs = refs
         .iter()
         .map(|reference| {
@@ -1630,16 +1670,8 @@ fn lexically_rank_scoped(
 
 pub(crate) fn resolve_agent_conversation_arg(
     reference: &str,
-    keys: Option<&[agent::refs::AgentConversationKey]>,
+    keys: &[agent::refs::AgentConversationKey],
 ) -> Result<agent::refs::ResolvedConversation> {
-    let loaded_keys;
-    let keys = if let Some(keys) = keys {
-        keys
-    } else {
-        let conversations = history::load_all_conversations(false, None)?;
-        loaded_keys = agent::refs::conversation_keys_from_conversations(&conversations)?;
-        &loaded_keys
-    };
     agent::refs::resolve_conversation_ref(keys, reference)
 }
 

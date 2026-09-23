@@ -114,6 +114,11 @@ bonus (0 to 0.2). Their sum gives the combined similarity. The overlap bonus is
 distinct from the lexical retrieval score. Both atoms are omitted when semantic
 evidence is unavailable; zero denotes a measured value, not missing data.
 
+When the user has several history sources configured, records from a named
+source carry `origin=<name>` (on `hit`, ranked `conversation`, and `read`/`outline`
+conversation records); records from unnamed sources omit it. Pass `--source <name>`
+after the subcommand to search or read only that source.
+
 A ranked conversation record summarizes its first retained hit, so it can omit
 these atoms even when a secondary hit has semantic evidence. Route-only ranking
 signals do not supply displayed breakdowns. Merged hits retain one contributing

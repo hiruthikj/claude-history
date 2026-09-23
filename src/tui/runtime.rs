@@ -188,6 +188,7 @@ pub fn run_with_loader(
     workspace_filter: bool,
     current_project_dir_name: Option<String>,
     exclude_projects: Vec<String>,
+    sources: crate::history::SourceSet,
     search_options: TuiSearchOptions,
 ) -> Result<(Action, Vec<Conversation>)> {
     let mut guard = TerminalGuard::new()?;
@@ -200,6 +201,7 @@ pub fn run_with_loader(
         exclude_projects,
         search_options,
     );
+    app.set_sources(sources);
 
     loop {
         loop {
@@ -263,7 +265,8 @@ pub fn run_with_loader(
                     let result = match source {
                         crate::history::Source::Claude => {
                             let uuid = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                            crate::history::delete_session_by_uuid(uuid).map(|_| ())
+                            let roots = app.selected_delete_roots();
+                            crate::history::delete_session_by_uuid(&roots, uuid).map(|_| ())
                         }
                         crate::history::Source::Pi => {
                             crate::history::pi_loader::delete_session(path)

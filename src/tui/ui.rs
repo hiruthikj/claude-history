@@ -232,6 +232,19 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ]);
     }
 
+    if app.has_source_choice() {
+        let (source_label, source_style) = match app.source_filter_label() {
+            Some(label) => (label, Style::default().fg(rgb(th().accent)).bold()),
+            None => ("All", label_style),
+        };
+        spans.extend([
+            Span::styled("S-Tab", key_style),
+            Span::styled("\u{b7}", label_style),
+            Span::styled(source_label.to_string(), source_style),
+            Span::raw("  "),
+        ]);
+    }
+
     if app.semantic_toggle_available() {
         let mode_style = if app.list_search_mode() == ListSearchMode::Semantic {
             Style::default().fg(rgb(th().accent)).bold()
@@ -1323,6 +1336,7 @@ fn render_help_overlay(
             ("PgUp / PgDn".into(), "Jump by page"),
             ("Home / End".into(), "Jump to first/last"),
             ("Tab".into(), "Toggle scope (All/Project)"),
+            ("Shift+Tab".into(), "Cycle source (when several)"),
             (keys.sort.help_label(), "Sort: best match / newest"),
             ("Enter".into(), "Open viewer"),
             ("Ctrl+O".into(), "Select and exit"),
@@ -1334,8 +1348,8 @@ fn render_help_overlay(
             ("Esc".into(), "Quit"),
         ];
         if semantic_available {
-            shortcuts.insert(10, ("Ctrl+T".into(), "Toggle semantic search"));
-            shortcuts.insert(11, ("Ctrl+S".into(), "Semantic details"));
+            shortcuts.insert(11, ("Ctrl+T".into(), "Toggle semantic search"));
+            shortcuts.insert(12, ("Ctrl+S".into(), "Semantic details"));
         }
         shortcuts
     };
@@ -1678,6 +1692,7 @@ mod tests {
 
     fn test_conversation() -> Conversation {
         Conversation {
+            origin: None,
             source: crate::history::Source::Claude,
             session_id: "session".to_owned(),
             path: PathBuf::from("/tmp/session.jsonl"),

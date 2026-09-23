@@ -20,6 +20,7 @@ pub mod path;
 pub mod pi;
 pub mod pi_loader;
 mod rename;
+pub mod sources;
 
 use crate::error::{AppError, Result};
 use chrono::{DateTime, Local};
@@ -36,8 +37,12 @@ pub use messages::{MessageOrdinals, MessageRange, Placement};
 pub(crate) use parser::process_conversation_file;
 pub use path::{convert_path_to_project_dir_name, format_short_name_from_path, is_same_project};
 pub use rename::append_session_rename;
+pub use sources::{SourceRoot, SourceSet};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// The kind of agent a transcript belongs to. Which root it came from is
+/// [`Conversation::origin`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Source {
     Claude,
     Pi,
@@ -99,6 +104,9 @@ pub struct ParseError {
 #[derive(Clone)]
 pub struct Conversation {
     pub source: Source,
+    /// The root this transcript was loaded from; `None` for a file opened
+    /// directly by path.
+    pub origin: Option<std::sync::Arc<SourceRoot>>,
     pub session_id: String,
     pub path: PathBuf,
     pub index: usize,
@@ -238,26 +246,8 @@ pub enum LoaderMessage {
     Done,
 }
 
-/// Get the root Claude projects directory (~/.claude/projects)
-/// Respects CLAUDE_CONFIG_DIR env variable if set.
-pub fn get_claude_projects_root() -> Result<PathBuf> {
-    let claude_dir = if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
-        PathBuf::from(config_dir)
-    } else {
-        let home_dir = home::home_dir().ok_or_else(|| {
-            AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Could not determine home directory",
-            ))
-        })?;
-        home_dir.join(".claude")
-    };
-
-    Ok(claude_dir.join("projects"))
-}
-
-/// Get the Claude projects directory for the current working directory
-pub fn get_claude_projects_dir(current_dir: &std::path::Path) -> Result<PathBuf> {
-    let converted = convert_path_to_project_dir_name(current_dir);
-    Ok(get_claude_projects_root()?.join(converted))
+/// The Claude project directory a workspace's sessions go in, under one
+/// root's `projects/` directory.
+pub fn claude_projects_dir(projects_root: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
+    projects_root.join(convert_path_to_project_dir_name(cwd))
 }

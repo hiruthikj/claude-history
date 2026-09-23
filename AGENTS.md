@@ -45,8 +45,11 @@ Facts that shape how to treat check results:
   hits its 10 s timeout while fastembed downloads the ~127 MB BGE-small model
   into `~/.cache/claude-history/semantic/fastembed`. It passes once the model
   is cached; it fails permanently offline. It is not a code regression.
-- Tests are not hermetic against `$HOME`: `src/history/cache.rs` tests and the
-  semantic worker tests read/write the real `~/.cache/claude-history`;
+- `tests/sources_cli.rs` runs the binary under a temporary `HOME` with its
+  own `config.toml`; copy that pattern for anything config-dependent.
+- Tests are not hermetic against `$HOME`: the semantic worker tests
+  read/write the real `~/.cache/claude-history` (the history cache tests use
+  temp dirs);
   `tests/agent_cli.rs` sets `CLAUDE_CONFIG_DIR` and
   `PI_CODING_AGENT_SESSION_DIR` to temp dirs but not `HOME`, so a personal
   `~/.config/claude-history/config.toml` leaks into integration tests.
@@ -105,17 +108,30 @@ after the terminal guard is dropped.
   requires a history cache bump. `MessageRange` lives here too, so `history/`
   no longer depends on `agent/refs.rs` (it still borrows text-bounding
   helpers from `agent/transcript.rs`).
-- Discovery roots and env vars: `CLAUDE_CONFIG_DIR` (Claude),
+- Roots come from `history/sources.rs::SourceSet`, resolved once per process
+  (`main.rs::run`, `run_delete_empty_command`, agent `execute_inner`) from
+  `[[sources]]` plus `--source` filters. Nothing else reads a root from the
+  environment: loaders, `find_jsonl_by_uuid`, `delete_session_by_uuid`,
+  delete-empty, `discover_agent_keys` and resume all take a `SourceSet` or a
+  `SourceRoot`. The loader stamps `Conversation::origin` (an `Arc<SourceRoot>`,
+  not cached — no schema bump) where it injects project info; resume applies
+  the root's `ResumeEnv` and computes the cross-project copy target from the
+  root's own `projects/`. With no `[[sources]]` the implicit set reproduces the
+  old env behaviour: `CLAUDE_CONFIG_DIR` (Claude),
   `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR` (Pi),
   `OMP_PROFILE`/`PI_PROFILE`, `PI_CONFIG_DIR`, `XDG_DATA_HOME` (OMP). Root
   resolution functions take env values as parameters so they are testable.
+  `ch_` digests do not include the source; a session UUID present in two roots
+  under the same project dir resolves as an ambiguous ref. `origin=<name>` is
+  emitted only for named sources, so single-source agent output is unchanged.
 - Claude `timestamp` is file mtime, so rename (which appends records) or any
   tool that touches the file reorders the list and invalidates its cache entry.
 
 ### Two caches, two version constants
 
 - `history/cache.rs`: per-project bincode files under
-  `~/.cache/claude-history/`. Validity = size + mtime match. `SCHEMA_VERSION`
+  `~/.cache/claude-history/`, namespaced per Claude config dir by
+  `claude_cache_dir` (`~/.claude` keeps the unnamespaced `projects/`). Validity = size + mtime match. `SCHEMA_VERSION`
   (Claude) and `PI_SCHEMA_VERSION`/`OMP_SCHEMA_VERSION` guard a shared
   `CacheEntry`. bincode has no field names: any change to `CacheEntry`,
   `MessageRange`, or to how the parser computes a cached field requires

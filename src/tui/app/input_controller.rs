@@ -553,6 +553,10 @@ impl App {
                 self.toggle_workspace_filter();
                 None
             }
+            KeyCode::BackTab => {
+                self.cycle_source_filter();
+                None
+            }
             KeyCode::Char('?') => {
                 self.dialog_mode = DialogMode::Help { scroll: 0 };
                 None

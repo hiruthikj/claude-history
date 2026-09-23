@@ -401,6 +401,11 @@ pub struct Args {
     #[arg(long, value_enum)]
     pub sort: Option<SortMode>,
 
+    /// Only use this history source: a [[sources]] name, or claude, pi, omp.
+    /// Repeatable; applies to every mode and subcommand
+    #[arg(long = "source", value_name = "NAME", global = true)]
+    pub sources: Vec<String>,
+
     #[command(flatten)]
     pub time: TimeRangeArgs,
 

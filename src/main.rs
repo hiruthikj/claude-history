@@ -24,6 +24,8 @@ mod update;
 use clap::Parser;
 use cli::{Args, Commands, DeleteEmptyArgs};
 use error::{AppError, Result};
+use history::SourceSet;
+use history::sources::ResumeEnv;
 use search::mode::{SearchModeResolution, TuiSearchMode};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -72,13 +74,15 @@ fn resolve_bool_setting(
     }
 }
 
-fn run_delete_empty_command(args: DeleteEmptyArgs) -> Result<()> {
+fn run_delete_empty_command(args: DeleteEmptyArgs, source_filters: &[String]) -> Result<()> {
+    let config = config::load_config()?;
+    let sources = SourceSet::resolve_selected(config.sources.as_deref(), source_filters)?;
     let scope = if args.local {
         history::DeleteEmptyScope::Local
     } else {
         history::DeleteEmptyScope::All
     };
-    let summary = history::delete_empty_transcripts(scope, args.yes)?;
+    let summary = history::delete_empty_transcripts(&sources, scope, args.yes)?;
 
     if summary.candidates.is_empty() {
         println!("No empty transcripts found.");
@@ -145,11 +149,13 @@ fn run() -> Result<()> {
     // Handle subcommands
     if let Some(command) = args.command {
         return match command {
-            Commands::Agent { command } => agent::service::execute(command).map(|output| {
-                print!("{output}");
-            }),
+            Commands::Agent { command } => {
+                agent::service::execute(command, &args.sources).map(|output| {
+                    print!("{output}");
+                })
+            }
             Commands::DeleteEmpty { yes, local, all } => {
-                run_delete_empty_command(DeleteEmptyArgs { yes, local, all })
+                run_delete_empty_command(DeleteEmptyArgs { yes, local, all }, &args.sources)
             }
             Commands::Update => update::run(),
         };
@@ -160,6 +166,7 @@ fn run() -> Result<()> {
     tui::theme::detect_theme();
 
     let config = config::load_config()?;
+    let sources = SourceSet::resolve_selected(config.sources.as_deref(), &args.sources)?;
 
     // Merge CLI arguments with config file settings. CLI takes precedence.
     let display_config = config.display.unwrap_or_default();
@@ -223,7 +230,7 @@ fn run() -> Result<()> {
 
     // Handle --delete flag: delete a session by UUID and exit
     if let Some(ref session_id) = args.delete {
-        match history::delete_session_by_uuid(session_id) {
+        match history::delete_session_by_uuid(sources.roots(), session_id) {
             Ok(count) => {
                 if count == 1 {
                     eprintln!("Deleted session {}", session_id);
@@ -245,7 +252,7 @@ fn run() -> Result<()> {
 
     // Handle --debug-search flag: debug search result scoring
     if let Some(ref query) = args.debug_search {
-        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        let mut conversations = history::load_all_conversations(&sources, show_last, args.debug)?;
         conversations.retain(|conversation| time_filter.matches(conversation.timestamp));
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
@@ -344,7 +351,7 @@ fn run() -> Result<()> {
     }
 
     if let Some(ref query) = args.debug_semantic_search {
-        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        let mut conversations = history::load_all_conversations(&sources, show_last, args.debug)?;
         conversations.retain(|conversation| time_filter.matches(conversation.timestamp));
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         return semantic_cli::debug_search(query, &conversations, args.local);
@@ -358,7 +365,14 @@ fn run() -> Result<()> {
                 "--generate-semantic-cache cannot be combined with a time filter".to_string(),
             ));
         }
-        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        // The embedding cache is shared by every source, so generating it for
+        // a subset leaves the rest silently without semantic results.
+        if !args.sources.is_empty() {
+            return Err(AppError::ConfigError(
+                "--generate-semantic-cache cannot be combined with --source".to_string(),
+            ));
+        }
+        let mut conversations = history::load_all_conversations(&sources, show_last, args.debug)?;
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         return semantic_cli::generate_cache(&conversations, args.local);
     }
@@ -369,7 +383,7 @@ fn run() -> Result<()> {
 
     // Handle --semantic-search flag
     if let Some(ref query) = args.semantic_search {
-        let mut conversations = history::load_all_conversations(show_last, args.debug)?;
+        let mut conversations = history::load_all_conversations(&sources, show_last, args.debug)?;
         conversations.retain(|conversation| time_filter.matches(conversation.timestamp));
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         return semantic_cli::run(query, &conversations, args.semantic_top, args.local);
@@ -415,7 +429,10 @@ fn run() -> Result<()> {
     // Handle --show-dir flag (needs current_dir)
     if args.show_dir {
         if let Some(ref dir) = current_dir {
-            let projects_dir = history::get_claude_projects_dir(dir)?;
+            let root = sources.primary_claude().ok_or_else(|| {
+                AppError::ConfigError("--show-dir needs a Claude source".to_string())
+            })?;
+            let projects_dir = history::claude_projects_dir(&root.projects_dir(), dir);
             println!("{}", projects_dir.display());
             return Ok(());
         } else {
@@ -430,7 +447,12 @@ fn run() -> Result<()> {
     let workspace_filter = use_local;
 
     // Always use streaming global loader for all conversations
-    let rx = history::load_all_conversations_streaming(show_last, args.debug, time_filter);
+    let rx = history::load_all_conversations_streaming(
+        sources.clone(),
+        show_last,
+        args.debug,
+        time_filter,
+    );
 
     // An empty result is far more often the time filter than an empty history,
     // so say which when a filter is in play.
@@ -449,6 +471,7 @@ fn run() -> Result<()> {
         workspace_filter,
         current_project_dir_name,
         exclude_projects,
+        sources.clone(),
         tui::TuiSearchOptions {
             default_mode: tui_search_mode(search_mode),
             sort: sort_mode,
@@ -459,16 +482,12 @@ fn run() -> Result<()> {
         (tui::Action::Select(path), convs) => (convs, path),
         (tui::Action::Resume(path), convs) => {
             let conv = convs.iter().find(|c| c.path == path);
-            let project_path = conv.and_then(|c| c.project_path.as_ref());
-            let source = conv.map(|c| c.source).unwrap_or(history::Source::Claude);
-            resume_with_agent(source, &path, project_path, default_args, false)?;
+            resume_with_agent(conv, &sources, &path, default_args, false)?;
             return Ok(());
         }
         (tui::Action::ForkResume(path), convs) => {
             let conv = convs.iter().find(|c| c.path == path);
-            let project_path = conv.and_then(|c| c.project_path.as_ref());
-            let source = conv.map(|c| c.source).unwrap_or(history::Source::Claude);
-            resume_with_agent(source, &path, project_path, default_args, true)?;
+            resume_with_agent(conv, &sources, &path, default_args, true)?;
             return Ok(());
         }
         (tui::Action::Quit, _) => return Err(AppError::SelectionCancelled),
@@ -512,12 +531,10 @@ fn run() -> Result<()> {
                 debug::debug(args.debug, &format!("project_path exists: {}", p.exists()));
             }
         }
-        let project_path = conv.and_then(|c| c.project_path.as_ref());
-        let source = conv.map(|c| c.source).unwrap_or(history::Source::Claude);
         resume_with_agent(
-            source,
+            conv,
+            &sources,
             &selected_path,
-            project_path,
             default_args,
             args.fork_session,
         )?;
@@ -671,7 +688,7 @@ mod agent_command_tests {
             vec![format!("{conversation}:m2..m4")],
             Some("m5".to_string()),
         );
-        let err = resolve_agent_read_args(&args, Some(&keys)).unwrap_err();
+        let err = resolve_agent_read_args(&args, &keys).unwrap_err();
         assert!(err.to_string().contains("outside"));
     }
 
@@ -690,15 +707,15 @@ mod agent_command_tests {
         let uuid = "12345678-1234-4234-9234-123456789abc";
 
         let read = read_args(vec![format!("{uuid}:m1..m2")], None);
-        assert!(resolve_agent_read_args(&read, Some(&keys)).is_ok());
+        assert!(resolve_agent_read_args(&read, &keys).is_ok());
 
         let focus = read_args(
             vec![format!("{}:m1..m2", keys[0].conversation_ref().canonical())],
             Some(format!("{uuid}:m1")),
         );
-        assert!(resolve_agent_read_args(&focus, Some(&keys)).is_ok());
+        assert!(resolve_agent_read_args(&focus, &keys).is_ok());
 
-        assert!(resolve_agent_conversation_arg(uuid, Some(&keys)).is_ok());
+        assert!(resolve_agent_conversation_arg(uuid, &keys).is_ok());
     }
 
     #[test]
@@ -738,7 +755,7 @@ mod agent_command_tests {
         let mut args = read_args(vec![format!("{conversation}:m1..m2")], None);
         args.match_query = Some("needle".to_string());
 
-        let error = resolve_agent_read_args(&args, Some(&keys)).unwrap_err();
+        let error = resolve_agent_read_args(&args, &keys).unwrap_err();
 
         assert!(error.to_string().contains("single-message ref"));
     }
@@ -806,6 +823,7 @@ mod agent_command_tests {
             query: "cache warming".to_string(),
             mode: SearchMode::Lexical,
             hits: vec![agent::search::AgentOutputHit {
+                origin: None,
                 conversation_ref: "ch_1234abcd5678".to_string(),
                 project_id: "pr_test".to_string(),
                 conversation_uuid: "12345678-1234-4234-9234-123456789abc".to_string(),
@@ -957,6 +975,7 @@ mod agent_command_tests {
 
     fn stubbed_conversation(path: PathBuf, message_count: usize) -> history::Conversation {
         history::Conversation {
+            origin: None,
             source: history::Source::Claude,
             session_id: path
                 .file_stem()
@@ -1536,6 +1555,7 @@ mod agent_command_tests {
             reference: key.conversation_ref(),
         };
         let conversation = history::Conversation {
+            origin: None,
             source: history::Source::Claude,
             session_id: key.session_id.clone(),
             path: key.path.clone(),
@@ -1714,13 +1734,15 @@ mod agent_command_tests {
         assert!(err.to_string().contains("exceeds transcript length"));
     }
 
+    /// A non-default root, so a copy into the wrong config dir would show.
+    const ROOT: &str = "/cfg/work/projects";
+
     #[test]
     fn resume_action_uses_cwd_when_it_maps_to_selected_project_dir() {
         let cwd = tempfile::tempdir().unwrap();
         let stale_project = tempfile::tempdir().unwrap();
         let stale_project_path = stale_project.path().to_path_buf();
-        let selected_path = history::get_claude_projects_dir(cwd.path())
-            .unwrap()
+        let selected_path = history::claude_projects_dir(ROOT.as_ref(), cwd.path())
             .join("12345678-1234-4234-9234-123456789abc.jsonl");
 
         let action = resolve_claude_resume_action(
@@ -1728,6 +1750,7 @@ mod agent_command_tests {
             Some(&stale_project_path),
             cwd.path(),
             false,
+            ROOT.as_ref(),
         )
         .unwrap();
 
@@ -1744,13 +1767,17 @@ mod agent_command_tests {
         let cwd = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let project_path = project.path().to_path_buf();
-        let selected_path = history::get_claude_projects_dir(project.path())
-            .unwrap()
+        let selected_path = history::claude_projects_dir(ROOT.as_ref(), project.path())
             .join("12345678-1234-4234-9234-123456789abc.jsonl");
 
-        let action =
-            resolve_claude_resume_action(&selected_path, Some(&project_path), cwd.path(), false)
-                .unwrap();
+        let action = resolve_claude_resume_action(
+            &selected_path,
+            Some(&project_path),
+            cwd.path(),
+            false,
+            ROOT.as_ref(),
+        )
+        .unwrap();
 
         assert_eq!(
             action,
@@ -1766,16 +1793,20 @@ mod agent_command_tests {
         let selected_project = tempfile::tempdir().unwrap();
         let stale_project = tempfile::tempdir().unwrap();
         let stale_project_path = stale_project.path().to_path_buf();
-        let selected_path = history::get_claude_projects_dir(selected_project.path())
-            .unwrap()
+        let selected_path = history::claude_projects_dir(ROOT.as_ref(), selected_project.path())
             .join("12345678-1234-4234-9234-123456789abc.jsonl");
-        let cwd_projects_dir = history::get_claude_projects_dir(cwd.path()).unwrap();
+        let cwd_projects_dir = history::claude_projects_dir(ROOT.as_ref(), cwd.path());
+        assert!(
+            cwd_projects_dir.starts_with(ROOT),
+            "copies stay in the session's own root"
+        );
 
         let action = resolve_claude_resume_action(
             &selected_path,
             Some(&stale_project_path),
             cwd.path(),
             false,
+            ROOT.as_ref(),
         )
         .unwrap();
 
@@ -1799,18 +1830,21 @@ enum ClaudeResumeAction {
     CopyToCurrent { cwd_projects_dir: PathBuf },
 }
 
+/// `projects_root` is the conversation's own root: copying into the current
+/// workspace must stay inside the config dir the session is resumed under.
 fn resolve_claude_resume_action(
     selected_path: &Path,
     project_path: Option<&PathBuf>,
     cwd: &Path,
     fork_session: bool,
+    projects_root: &Path,
 ) -> Result<ClaudeResumeAction> {
     let conv_projects_dir = selected_path.parent().ok_or_else(|| {
         AppError::ClaudeExecutionError(
             "Cannot determine conversation's project directory".to_string(),
         )
     })?;
-    let cwd_projects_dir = history::get_claude_projects_dir(cwd)?;
+    let cwd_projects_dir = history::claude_projects_dir(projects_root, cwd);
     let project_dir = project_path.filter(|p| p.exists() && p.is_dir());
 
     if project_dir.is_none() || (fork_session && cwd_projects_dir != conv_projects_dir) {
@@ -1824,7 +1858,7 @@ fn resolve_claude_resume_action(
     }
 
     let project_dir = project_dir.unwrap();
-    let project_projects_dir = history::get_claude_projects_dir(project_dir)?;
+    let project_projects_dir = history::claude_projects_dir(projects_root, project_dir);
     if project_projects_dir == conv_projects_dir {
         Ok(ClaudeResumeAction::Run {
             current_dir: project_dir.clone(),
@@ -1835,26 +1869,52 @@ fn resolve_claude_resume_action(
 }
 
 fn resume_with_agent(
-    source: history::Source,
+    conversation: Option<&history::Conversation>,
+    sources: &SourceSet,
     selected_path: &Path,
-    project_path: Option<&PathBuf>,
     default_args: &[String],
     fork_session: bool,
 ) -> Result<()> {
+    let project_path = conversation.and_then(|c| c.project_path.as_ref());
+    let source = conversation
+        .map(|c| c.source)
+        .unwrap_or(history::Source::Claude);
+    // A session resumes under the root it was loaded from, so the agent sees
+    // that root's settings, MCP servers and memory.
+    let origin = conversation
+        .and_then(|c| c.origin.clone())
+        .or_else(|| sources.owner_of(selected_path).cloned());
+    let env = origin
+        .as_ref()
+        .map_or(ResumeEnv::Inherit, |root| root.resume_env.clone());
     match source {
         history::Source::Claude => {
-            resume_with_claude(selected_path, project_path, default_args, fork_session)
+            let projects_root = origin
+                .as_ref()
+                .or_else(|| sources.primary_claude())
+                .map(|root| root.projects_dir())
+                .ok_or_else(|| {
+                    AppError::ClaudeExecutionError("no Claude source to resume into".to_string())
+                })?;
+            resume_with_claude(
+                selected_path,
+                project_path,
+                &projects_root,
+                &env,
+                default_args,
+                fork_session,
+            )
         }
-        history::Source::Pi => run_claude_command(build_pi_resume_command(
-            selected_path,
-            project_path,
-            fork_session,
-        )),
-        history::Source::Omp => run_claude_command(build_omp_resume_command(
-            selected_path,
-            project_path,
-            fork_session,
-        )),
+        history::Source::Pi => {
+            let mut command = build_pi_resume_command(selected_path, project_path, fork_session);
+            env.apply(&mut command);
+            run_claude_command(command)
+        }
+        history::Source::Omp => {
+            let mut command = build_omp_resume_command(selected_path, project_path, fork_session);
+            env.apply(&mut command);
+            run_claude_command(command)
+        }
     }
 }
 
@@ -1889,6 +1949,8 @@ fn build_omp_resume_command(
 fn resume_with_claude(
     selected_path: &Path,
     project_path: Option<&PathBuf>,
+    projects_root: &Path,
+    env: &ResumeEnv,
     default_args: &[String],
     fork_session: bool,
 ) -> Result<()> {
@@ -1913,7 +1975,13 @@ fn resume_with_claude(
         )
     })?;
 
-    match resolve_claude_resume_action(selected_path, project_path, &cwd, fork_session)? {
+    match resolve_claude_resume_action(
+        selected_path,
+        project_path,
+        &cwd,
+        fork_session,
+        projects_root,
+    )? {
         ClaudeResumeAction::CopyToCurrent { cwd_projects_dir } => {
             std::fs::create_dir_all(&cwd_projects_dir).map_err(AppError::Io)?;
             copy_session_files(
@@ -1927,6 +1995,7 @@ fn resume_with_claude(
             command.args(["--resume", &conversation_id]);
             command.args(default_args);
             command.current_dir(&cwd);
+            env.apply(&mut command);
             run_claude_command(command)
         }
         ClaudeResumeAction::Run { current_dir } => {
@@ -1937,6 +2006,7 @@ fn resume_with_claude(
             }
             command.args(default_args);
             command.current_dir(current_dir);
+            env.apply(&mut command);
 
             run_claude_command(command)
         }

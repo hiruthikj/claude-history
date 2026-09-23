@@ -94,5 +94,12 @@ pub(super) fn multiple_sources(conversations: &[crate::history::Conversation]) -
     let Some(first) = conversations.first() else {
         return false;
     };
-    conversations.iter().any(|c| c.source != first.source)
+    let label = |c: &crate::history::Conversation| {
+        c.origin
+            .as_deref()
+            .map_or(c.source.list_label(), |origin| origin.label())
+            .to_string()
+    };
+    let first = label(first);
+    conversations.iter().any(|c| label(c) != first)
 }

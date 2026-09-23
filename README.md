@@ -451,6 +451,7 @@ Options:
       --debug-search <QUERY>  Debug search result scoring for a query
       --debug [<LEVEL>]  Print debug information (optionally filter by level: debug, info, warn, error)
   -L, --local            Show only conversations from the current workspace directory
+      --source <NAME>    Only use this history source: a [[sources]] name, or claude, pi, omp. Repeatable; applies to every mode and subcommand
       --sort <SORT>      Order TUI search hits by relevance score or by recency (newest first) [possible values: relevance, recency]
       --since <WHEN>     Only conversations this recent (duration or date)
       --after <WHEN>     Alias for --since
@@ -758,6 +759,49 @@ you can temporarily switch to summaries with `--no-tools`.
 If you use the `CLAUDE_CONFIG_DIR` environment variable to store Claude's
 configuration in a non-default location, `claude-history` will respect it
 automatically — no extra flags needed.
+
+## Multiple history sources
+
+If you run Claude Code with more than one config directory (say a personal and
+a work `CLAUDE_CONFIG_DIR`), list them under `[[sources]]` and every session
+shows up in one list:
+
+```toml
+[[sources]]
+kind = "claude"
+dir  = "~/.claude"
+
+[[sources]]
+kind = "claude"
+dir  = "~/.claude-work"
+name = "work"   # optional: label in the list and handle for --source
+
+[[sources]]
+kind = "pi"     # Pi and OMP only when listed; `dir` is optional for them
+```
+
+- `kind` is `claude`, `pi` or `omp`, and the same kind may appear more than
+  once. `dir` is the Claude config dir (the one holding `projects/`), or the
+  Pi/OMP agent dir; `~/` is expanded.
+- Once `[[sources]]` is present it is the whole list: `$CLAUDE_CONFIG_DIR` is
+  ignored, and Pi/OMP are read only if listed. Without it nothing changes:
+  `$CLAUDE_CONFIG_DIR` or `~/.claude`, plus Pi and OMP when installed.
+- Search, sorting, the time and workspace filters, and the agent protocol work
+  across all sources. List rows carry each source's label when there is more
+  than one, and `Shift+Tab` narrows the list to one source at a time.
+- Resume and fork use the session's own source: Claude runs with
+  `CLAUDE_CONFIG_DIR=<dir>`, so that directory's settings, MCP servers and
+  memory apply (for `~/.claude` itself the variable is cleared instead, which
+  is how Claude finds `~/.claude.json`). Pi and OMP get `PI_CODING_AGENT_DIR`
+  for a configured `dir`. Delete touches only the session's own source.
+- `--source <NAME>` (repeatable) narrows any mode to the named sources; a kind
+  (`claude`, `pi`, `omp`) selects every source of that kind. With a
+  subcommand, put it after the subcommand: `claude-history agent search auth
+  --source work`. `--show-dir` reports the first Claude source.
+- The parse cache is kept per source directory.
+- If you were merging config dirs with a hard-linked "merged view", remove it
+  once `[[sources]]` lists the real dirs: hard links are separate files to
+  `claude-history`, so every session would appear twice.
 
 ## Filtering details
 

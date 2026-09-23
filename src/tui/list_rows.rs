@@ -146,7 +146,11 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
         .as_ref()
         .map(|name| {
             if source.multiple_sources {
-                format!("{:<3} · {name}", conv.source.list_label())
+                let label = conv
+                    .origin
+                    .as_deref()
+                    .map_or(conv.source.list_label(), |origin| origin.label());
+                format!("{label:<3} · {name}")
             } else {
                 name.to_string()
             }
@@ -327,6 +331,7 @@ mod tests {
 
     fn conversation() -> Conversation {
         Conversation {
+            origin: None,
             source: Source::Claude,
             session_id: "session".to_owned(),
             path: PathBuf::from("/tmp/session.jsonl"),

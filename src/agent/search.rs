@@ -87,6 +87,7 @@ pub struct AgentConversationMetadata {
     pub project_id: String,
     pub conversation_uuid: String,
     pub conversation_ref: String,
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,6 +125,8 @@ pub struct AgentOutputHit {
     pub preview: String,
     pub focus_range: MessageRange,
     pub read_range: MessageRange,
+    /// Named source the transcript came from (see `protocol::origin_atom`).
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,6 +156,7 @@ pub fn attach_transcript_metadata(
             project_id: resolved.key.project_id(),
             conversation_uuid: resolved.reference.uuid(),
             conversation_ref: reference.clone(),
+            origin: resolved.key.origin.clone(),
         });
     }
     for hit in output
@@ -250,17 +254,18 @@ pub fn format_agent_output_with_warnings(
     ));
     if let Some(target) = &output.target {
         units.push(format!(
-            "conversation project={} uuid={} ref={}\n",
+            "conversation project={} uuid={} ref={}{}\n",
             crate::agent::protocol::escape_atom(&target.project_id),
             crate::agent::protocol::escape_atom(&target.conversation_uuid),
-            crate::agent::protocol::escape_atom(&target.conversation_ref)
+            crate::agent::protocol::escape_atom(&target.conversation_ref),
+            crate::agent::protocol::origin_atom(target.origin.as_deref())
         ));
     }
     if grouped {
         units.push(format!("groups count={}\n", output.groups.len()));
         for (index, group) in output.groups.iter().enumerate() {
             units.push(format!(
-                "conversation rank={} project={} uuid={} ref={} score={:.6}{} hits={} total={} | {}\n",
+                "conversation rank={} project={} uuid={} ref={} score={:.6}{} hits={} total={}{} | {}\n",
                 index + 1,
                 crate::agent::protocol::escape_atom(&group.project_id),
                 crate::agent::protocol::escape_atom(&group.conversation_uuid),
@@ -269,6 +274,9 @@ pub fn format_agent_output_with_warnings(
                 score_breakdown_atoms(group.hits.first().and_then(|hit| hit.semantic_score_breakdown)),
                 group.hits.len(),
                 group.total_hits,
+                crate::agent::protocol::origin_atom(
+                    group.hits.first().and_then(|hit| hit.origin.as_deref())
+                ),
                 protocol_snippet(&group.title, AGENT_SEARCH_TITLE_CHARS)
             ));
             units.extend(group.hits.iter().map(hit_unit));
@@ -335,7 +343,7 @@ fn score_breakdown_atoms(breakdown: Option<SemanticScoreBreakdown>) -> String {
 fn hit_unit(hit: &AgentOutputHit) -> String {
     let mut rendered = String::new();
     rendered.push_str(&format!(
-        "hit project={} uuid={} ref={} anchors={} source={} score={:.6}{} focus=m{}..m{} | {}\n",
+        "hit project={} uuid={} ref={} anchors={} source={} score={:.6}{} focus=m{}..m{}{} | {}\n",
         crate::agent::protocol::escape_atom(&hit.project_id),
         crate::agent::protocol::escape_atom(&hit.conversation_uuid),
         crate::agent::protocol::escape_atom(&hit.conversation_ref),
@@ -345,6 +353,7 @@ fn hit_unit(hit: &AgentOutputHit) -> String {
         score_breakdown_atoms(hit.semantic_score_breakdown),
         hit.focus_range.start,
         hit.focus_range.end,
+        crate::agent::protocol::origin_atom(hit.origin.as_deref()),
         protocol_snippet(&hit.preview, AGENT_SEARCH_HIT_CHARS)
     ));
     rendered.push_str(&format!(
@@ -733,6 +742,7 @@ fn retrieval_output_hit(
     mode: SearchMode,
 ) -> AgentOutputHit {
     AgentOutputHit {
+        origin: resolved.key.origin.clone(),
         conversation_ref: resolved.reference.canonical(),
         project_id: resolved.key.project_id(),
         conversation_uuid: resolved.reference.uuid(),
@@ -791,6 +801,7 @@ fn semantic_output_hit_candidates(
                 .iter()
                 .find(|input| input.original_index == hit.conversation_index)?;
             Some(AgentOutputHit {
+                origin: input.resolved.key.origin.clone(),
                 conversation_ref: input.resolved.reference.canonical(),
                 project_id: input.resolved.key.project_id(),
                 conversation_uuid: input.resolved.reference.uuid(),
@@ -1283,6 +1294,7 @@ mod tests {
 
     fn conversation(path: &str, title: &str) -> Conversation {
         Conversation {
+            origin: None,
             source: crate::history::Source::Claude,
             session_id: String::new(),
             path: PathBuf::from(path),
@@ -1398,6 +1410,7 @@ mod tests {
         read_range: MessageRange,
     ) -> AgentOutputHit {
         AgentOutputHit {
+            origin: None,
             conversation_ref: conv.to_string(),
             project_id: "pr_test".to_string(),
             conversation_uuid: test_uuid(conv),
@@ -1425,6 +1438,7 @@ mod tests {
         read_range: MessageRange,
     ) -> AgentOutputHit {
         AgentOutputHit {
+            origin: None,
             conversation_ref: conv.to_string(),
             project_id: "pr_test".to_string(),
             conversation_uuid: test_uuid(conv),
@@ -1452,6 +1466,7 @@ mod tests {
         read_range: MessageRange,
     ) -> AgentOutputHit {
         AgentOutputHit {
+            origin: None,
             conversation_ref: conv.to_string(),
             project_id: "pr_test".to_string(),
             conversation_uuid: test_uuid(conv),
@@ -2142,6 +2157,7 @@ mod tests {
     #[test]
     fn grouped_search_preserves_duplicate_previews_at_distinct_messages() {
         let hit = |focus| AgentOutputHit {
+            origin: None,
             conversation_ref: "ch_a".to_string(),
             project_id: "pr_test".to_string(),
             conversation_uuid: "uuid-a".to_string(),

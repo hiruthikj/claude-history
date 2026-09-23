@@ -115,6 +115,10 @@ pub struct App {
     row_evidence: rows::RowEvidenceCache,
     /// Whether the corpus mixes sources; maintained where the corpus changes
     multiple_sources: bool,
+    /// Where history was loaded from: UUID lookups and deletes stay inside it
+    sources: crate::history::SourceSet,
+    /// Index into `sources.roots()` the list is narrowed to (Shift+Tab)
+    source_filter: Option<usize>,
 }
 
 struct AppParts {
@@ -180,6 +184,8 @@ impl App {
             results_version: 0,
             row_evidence: rows::RowEvidenceCache::default(),
             multiple_sources,
+            sources: crate::history::SourceSet::default(),
+            source_filter: None,
         }
     }
 
@@ -252,6 +258,7 @@ impl App {
             &conversations,
             &excluded_projects,
             false,
+            None,
             None,
         );
         let selected = if filtered.is_empty() { None } else { Some(0) };
@@ -497,6 +504,21 @@ impl App {
 
     pub fn list_search_mode(&self) -> ListSearchMode {
         self.list_search_mode
+    }
+
+    pub fn set_sources(&mut self, sources: crate::history::SourceSet) {
+        self.sources = sources;
+        self.source_filter = None;
+    }
+
+    /// Label of the source the list is narrowed to; `None` means all. Only
+    /// meaningful when [`Self::has_source_choice`].
+    pub fn source_filter_label(&self) -> Option<&str> {
+        self.source_filter_root().map(|root| root.label())
+    }
+
+    pub fn has_source_choice(&self) -> bool {
+        self.sources.roots().len() > 1
     }
 
     pub fn list_sort(&self) -> SortMode {

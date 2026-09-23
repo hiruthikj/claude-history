@@ -24,6 +24,20 @@ pub fn session_root() -> Result<OmpSessionRoot> {
     )
 }
 
+/// The session root for an explicitly configured OMP agent dir. Profile and
+/// session-dir environment overrides do not apply to a configured source.
+pub fn session_root_for_agent_dir(agent_dir: PathBuf) -> Result<OmpSessionRoot> {
+    session_root_from(
+        None,
+        Some(agent_dir),
+        None,
+        None,
+        None,
+        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+        home::home_dir(),
+    )
+}
+
 fn session_root_from(
     config_dir: Option<PathBuf>,
     agent_override: Option<PathBuf>,
@@ -129,11 +143,11 @@ fn collect_jsonl(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 pub fn load_omp_conversations(
+    root: &OmpSessionRoot,
     show_last: bool,
     debug_level: Option<DebugLevel>,
 ) -> Result<Vec<Conversation>> {
-    let root = session_root()?;
-    let files = discover_files(&root)?;
+    let files = discover_files(root)?;
     let cached = super::cache::read_omp_cache(&root.path).unwrap_or_default();
     let mut updated_cache = std::collections::HashMap::new();
     let mut conversations = Vec::new();

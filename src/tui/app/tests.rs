@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 fn conversation(project: Option<&str>, project_dir: &str, uuid: &str, text: &str) -> Conversation {
     Conversation {
+        origin: None,
         source: crate::history::Source::Claude,
         session_id: uuid.to_owned(),
         path: PathBuf::from(format!("/tmp/claude-projects/{project_dir}/{uuid}.jsonl")),
@@ -350,6 +351,50 @@ fn sort_key_flips_order_and_back_to_relevance() {
     assert_eq!(app.list_sort(), SortMode::Relevance);
     wait_for_search(&mut app);
     assert_eq!(filtered_session_ids(&app), relevance);
+}
+
+#[test]
+fn shift_tab_cycles_the_list_through_each_source() {
+    use crate::history::sources::{ResumeEnv, SourceRoot};
+    use crate::history::{Source, SourceSet};
+    let root = |dir: &str, name: Option<&str>| SourceRoot {
+        kind: Source::Claude,
+        name: name.map(str::to_string),
+        dir: std::path::PathBuf::from(dir),
+        flat: false,
+        resume_env: ResumeEnv::Inherit,
+    };
+    let sources = SourceSet::from_roots_for_test(vec![
+        root("/c/personal", None),
+        root("/c/work", Some("work")),
+    ]);
+    let mut conversations = sort_conversations();
+    conversations[0].origin = Some(sources.roots()[0].clone());
+    conversations[1].origin = Some(sources.roots()[1].clone());
+    let mut app = app(conversations, vec![]);
+    app.set_sources(sources);
+    assert!(app.has_source_choice());
+    app.update_filter();
+    assert_eq!(app.filtered().len(), 2);
+    assert_eq!(app.source_filter_label(), None);
+
+    app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT, 10);
+    assert_eq!(app.source_filter_label(), Some("CC"));
+    assert_eq!(
+        filtered_session_ids(&app),
+        vec!["11111111-1111-4111-8111-111111111111"]
+    );
+
+    app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT, 10);
+    assert_eq!(app.source_filter_label(), Some("work"));
+    assert_eq!(
+        filtered_session_ids(&app),
+        vec!["22222222-2222-4222-8222-222222222222"]
+    );
+
+    app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT, 10);
+    assert_eq!(app.source_filter_label(), None);
+    assert_eq!(app.filtered().len(), 2);
 }
 
 #[test]

@@ -536,6 +536,27 @@ impl App {
         }
     }
 
+    /// Steps the list through All → each source → All. A no-op with one
+    /// source.
+    pub(super) fn cycle_source_filter(&mut self) {
+        let count = self.sources.roots().len();
+        if count < 2 {
+            return;
+        }
+        self.source_filter = match self.source_filter {
+            None => Some(0),
+            Some(index) if index + 1 < count => Some(index + 1),
+            Some(_) => None,
+        };
+        self.semantic_sent_scope_signature = None;
+        self.invalidate_search_generation();
+        if self.list_search_mode == ListSearchMode::Semantic && !self.query.trim().is_empty() {
+            self.dispatch_search();
+        } else {
+            self.update_filter();
+        }
+    }
+
     pub(super) fn toggle_list_search_mode(&mut self) {
         if !self.semantic_search.available {
             return;
@@ -625,9 +646,10 @@ impl App {
             }
         }
 
-        let path = crate::history::find_jsonl_by_uuid(uuid).ok()??;
+        let (path, root) = crate::history::find_jsonl_by_uuid(&self.sources, uuid).ok()??;
         let modified = path.metadata().ok().and_then(|m| m.modified().ok());
         let mut conv = crate::history::process_conversation_file(path, modified, None).ok()??;
+        conv.origin = Some(root);
 
         let fallback_path = conv
             .path

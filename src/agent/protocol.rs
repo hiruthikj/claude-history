@@ -312,11 +312,18 @@ pub fn format_outline_with_warnings(
 
 fn conversation_record(resolved: &ResolvedConversation) -> String {
     format!(
-        "conversation project={} uuid={} ref={}\n",
+        "conversation project={} uuid={} ref={}{}\n",
         escape_atom(&resolved.key.project_id()),
         escape_atom(&resolved.reference.uuid()),
-        escape_atom(&resolved.reference.canonical())
+        escape_atom(&resolved.reference.canonical()),
+        origin_atom(resolved.key.origin.as_deref())
     )
+}
+
+/// ` origin=<name>` for a transcript from a named `[[sources]]` entry, else
+/// nothing, so single-source output is unchanged.
+pub fn origin_atom(origin: Option<&str>) -> String {
+    origin.map_or_else(String::new, |name| format!(" origin={}", escape_atom(name)))
 }
 
 pub fn escape_atom(value: &str) -> String {

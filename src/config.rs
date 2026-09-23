@@ -21,6 +21,9 @@ pub struct ConfigFile {
     pub tui: Option<TuiConfig>,
     pub search: Option<SearchConfig>,
     pub agent: Option<AgentConfig>,
+    /// History roots; absent means `$CLAUDE_CONFIG_DIR`/`~/.claude` plus
+    /// whatever Pi and OMP resolve to.
+    pub sources: Option<Vec<crate::history::sources::SourceConfig>>,
 }
 
 #[derive(Deserialize, Debug, Default)]

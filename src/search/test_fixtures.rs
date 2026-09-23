@@ -36,6 +36,7 @@ pub fn one_message_conversation(
     }
 
     Conversation {
+        origin: None,
         source: crate::history::Source::Claude,
         session_id: String::new(),
         path: PathBuf::new(),

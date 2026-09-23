@@ -14,7 +14,15 @@ impl App {
             &self.excluded_projects,
             self.workspace_filter,
             self.current_project_dir_name.as_deref(),
+            self.source_filter_root(),
         )
+    }
+
+    /// The root the list is narrowed to, if any.
+    pub(crate) fn source_filter_root(&self) -> Option<&crate::history::SourceRoot> {
+        self.source_filter
+            .and_then(|index| self.sources.roots().get(index))
+            .map(|root| root.as_ref())
     }
 
     pub(super) fn apply_filtered(&mut self, filtered: Vec<usize>) {
@@ -115,6 +123,22 @@ impl App {
             .map(|index| self.conversations[index].source)
     }
 
+    /// The roots a delete of the selected Claude session may touch: its own
+    /// root, or every Claude root when it was not loaded from one.
+    pub(crate) fn selected_delete_roots(&self) -> Vec<std::sync::Arc<crate::history::SourceRoot>> {
+        let origin = self
+            .get_selected_conversation_index()
+            .and_then(|index| self.conversations[index].origin.clone());
+        match origin {
+            Some(root) => vec![root],
+            None => self
+                .sources
+                .of_kind(crate::history::Source::Claude)
+                .cloned()
+                .collect(),
+        }
+    }
+
     pub(super) fn get_selected_conversation_index(&self) -> Option<usize> {
         self.selected
             .and_then(|sel| self.filtered.get(sel))
@@ -165,12 +189,21 @@ pub(super) fn filter_conversation_indices<I>(
     excluded_projects: &HashSet<String>,
     workspace_filter: bool,
     current_project_dir_name: Option<&str>,
+    source_filter: Option<&crate::history::SourceRoot>,
 ) -> Vec<usize>
 where
     I: IntoIterator<Item = usize>,
 {
     indices
         .into_iter()
+        .filter(|&idx| {
+            source_filter.is_none_or(|root| {
+                conversations[idx]
+                    .origin
+                    .as_deref()
+                    .is_some_and(|origin| std::ptr::eq(origin, root))
+            })
+        })
         .filter(|&idx| {
             conversations[idx]
                 .project_name
