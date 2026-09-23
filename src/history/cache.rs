@@ -16,9 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CACHE_MAGIC: [u8; 8] = *b"CLHIST01";
 const PI_CACHE_MAGIC: [u8; 8] = *b"PIHIST01";
 const OMP_CACHE_MAGIC: [u8; 8] = *b"OMHIST01";
-const SCHEMA_VERSION: u32 = 13;
-const PI_SCHEMA_VERSION: u32 = 3;
-const OMP_SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 14;
+const PI_SCHEMA_VERSION: u32 = 4;
+const OMP_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Serialize, Deserialize)]
 struct PiCache {
@@ -65,6 +65,7 @@ pub struct CacheEntry {
     pub search_text_lower: String,
     pub dialogue_text_lower: String,
     pub cwd: Option<PathBuf>,
+    pub last_cwd: Option<PathBuf>,
     pub message_count: usize,
     pub parse_errors: Vec<CachedParseError>,
     pub summary: Option<String>,
@@ -248,6 +249,7 @@ pub fn empty_entry(file_size: u64, mtime: SystemTime) -> CacheEntry {
         search_text_lower: String::new(),
         dialogue_text_lower: String::new(),
         cwd: None,
+        last_cwd: None,
         message_count: 0,
         parse_errors: Vec::new(),
         summary: None,
@@ -281,6 +283,7 @@ pub fn entry_from_conversation(
         search_text_lower: conv.search_text_lower.clone(),
         dialogue_text_lower: conv.dialogue_text_lower.clone(),
         cwd: conv.cwd.clone(),
+        last_cwd: conv.last_cwd.clone(),
         message_count: conv.message_count,
         parse_errors: conv
             .parse_errors
@@ -337,6 +340,7 @@ pub fn conversation_from_entry(entry: &CacheEntry, path: PathBuf, show_last: boo
         project_name: None,
         project_path: None,
         cwd: entry.cwd.clone(),
+        last_cwd: entry.last_cwd.clone(),
         message_count: entry.message_count,
         parse_errors: entry
             .parse_errors
@@ -374,6 +378,7 @@ mod tests {
     fn make_test_conversation() -> Conversation {
         let timestamp = Local::now();
         Conversation {
+            last_cwd: None,
             origin: None,
             source: crate::history::Source::Claude,
             session_id: "conv".to_owned(),
@@ -444,7 +449,8 @@ mod tests {
 
     #[test]
     fn roundtrip_entry_preserves_data() {
-        let conv = make_test_conversation();
+        let mut conv = make_test_conversation();
+        conv.last_cwd = Some(PathBuf::from("/home/me/Work/repo"));
         let mtime = UNIX_EPOCH + Duration::from_secs(1700000000) + Duration::from_nanos(123456789);
         let file_size = 42000;
 
@@ -465,6 +471,7 @@ mod tests {
         assert_eq!(restored.preview, conv.preview_first);
         assert_eq!(restored.preview_first, conv.preview_first);
         assert_eq!(restored.preview_last, conv.preview_last);
+        assert_eq!(restored.last_cwd, conv.last_cwd);
         assert_eq!(restored.full_text, conv.full_text);
         assert_eq!(restored.agent_search_text, conv.agent_search_text);
         assert_eq!(restored.semantic_turns, conv.semantic_turns);

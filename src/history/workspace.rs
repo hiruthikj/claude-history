@@ -67,6 +67,7 @@ mod tests {
 
     fn conversation(source: Source, path: &str, cwd: Option<&Path>) -> Conversation {
         Conversation {
+            last_cwd: None,
             origin: None,
             source,
             session_id: "session".to_owned(),

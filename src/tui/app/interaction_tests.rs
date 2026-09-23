@@ -10,6 +10,7 @@ fn test_conversation(path: PathBuf, custom_title: Option<String>) -> Conversatio
         full_text = format!("{} {}", title, full_text);
     }
     Conversation {
+        last_cwd: None,
         origin: None,
         source: crate::history::Source::Claude,
         session_id: path

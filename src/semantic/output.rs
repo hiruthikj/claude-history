@@ -80,6 +80,7 @@ mod tests {
 
     fn conversation() -> Conversation {
         Conversation {
+            last_cwd: None,
             origin: None,
             source: crate::history::Source::Claude,
             session_id: "session-1".to_owned(),

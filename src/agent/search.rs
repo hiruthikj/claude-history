@@ -1305,6 +1305,7 @@ mod tests {
 
     fn conversation(path: &str, title: &str) -> Conversation {
         Conversation {
+            last_cwd: None,
             origin: None,
             source: crate::history::Source::Claude,
             session_id: String::new(),

@@ -965,6 +965,7 @@ mod agent_command_tests {
 
     fn stubbed_conversation(path: PathBuf, message_count: usize) -> history::Conversation {
         history::Conversation {
+            last_cwd: None,
             origin: None,
             source: history::Source::Claude,
             session_id: path
@@ -1545,6 +1546,7 @@ mod agent_command_tests {
             reference: key.conversation_ref(),
         };
         let conversation = history::Conversation {
+            last_cwd: None,
             origin: None,
             source: history::Source::Claude,
             session_id: key.session_id.clone(),

@@ -132,6 +132,9 @@ pub struct Conversation {
     pub project_path: Option<PathBuf>,
     /// The working directory extracted from the JSONL file (the actual cwd)
     pub cwd: Option<PathBuf>,
+    /// Where the session ended up (`/cd`, a `cd` Claude followed), when that
+    /// differs from `cwd`. Claude only; Pi/OMP record one cwd per session.
+    pub last_cwd: Option<PathBuf>,
     /// Number of user and assistant messages in the conversation
     pub message_count: usize,
     /// Parse errors encountered while processing this conversation file

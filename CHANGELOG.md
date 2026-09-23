@@ -8,7 +8,10 @@
   tokens such as `lexical.rs`
 - Identifier queries with underscores (`api_key`) are ranked by relevance
   instead of only by recency
-- The history cache is rebuilt once on first run after upgrading
+- The history cache is rebuilt once on first run after upgrading (again for
+  the moved-folder change below; expect one slow start on a cold disk)
+- A session that moved to another folder (`/cd`) shows both in the list and
+  viewer, `Work › claude-history`, and takes the second folder's colour
 - `[[sources]]` config merges several history roots into one list, including
   more than one Claude config dir; sessions resume, fork and delete in their
   own source, `Shift+Tab` narrows the list to one source, and `--source <name>`

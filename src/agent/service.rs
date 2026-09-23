@@ -801,6 +801,7 @@ fn conversation_from_agent_transcript(
         .unwrap_or_else(|_| chrono::Local::now());
     let semantic_route_text = history::semantic_route_text(&full_text, "");
     history::Conversation {
+        last_cwd: None,
         origin: None,
         source,
         session_id: transcript
@@ -1009,6 +1010,7 @@ fn stripped_semantic_conversation(
     semantic_turn_ranges: Vec<crate::history::MessageRange>,
 ) -> history::Conversation {
     history::Conversation {
+        last_cwd: None,
         origin: None,
         source: conversation.source,
         session_id: conversation.session_id.clone(),

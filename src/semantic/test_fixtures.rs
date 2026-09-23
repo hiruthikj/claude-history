@@ -93,6 +93,7 @@ impl SemanticConversationFixture {
     pub fn build(self) -> Conversation {
         let semantic_route_text = crate::history::semantic_route_text(&self.full_text, "");
         Conversation {
+            last_cwd: None,
             origin: None,
             source: crate::history::Source::Claude,
             session_id: self

@@ -158,6 +158,7 @@ pub fn process_conversation_reader<R: BufRead>(
     let mut dialogue_parts = Vec::new();
     let mut user_messages = Vec::new();
     let mut extracted_cwd: Option<PathBuf> = None;
+    let mut last_cwd: Option<String> = None;
     let mut ordinals = MessageOrdinals::new();
     let mut parse_errors: Vec<ParseError> = Vec::new();
     let mut extracted_summary: Option<String> = None;
@@ -219,11 +220,13 @@ pub fn process_conversation_reader<R: BufRead>(
                             last_timestamp = Some(ts);
                         }
 
-                        // Extract cwd from the first user message that has it
-                        if extracted_cwd.is_none()
-                            && let Some(cwd_str) = cwd
-                        {
-                            extracted_cwd = Some(PathBuf::from(cwd_str));
+                        // Extract cwd from the first user message that has it,
+                        // and keep the latest one for where the session moved
+                        if let Some(cwd_str) = cwd {
+                            if extracted_cwd.is_none() {
+                                extracted_cwd = Some(PathBuf::from(&cwd_str));
+                            }
+                            last_cwd = Some(cwd_str);
                         }
 
                         let preview_text = extract_text_from_user(&message);
@@ -560,6 +563,9 @@ pub fn process_conversation_reader<R: BufRead>(
         dialogue_text_lower,
         project_name: None,
         project_path: None,
+        last_cwd: last_cwd
+            .map(PathBuf::from)
+            .filter(|last| Some(last) != extracted_cwd.as_ref()),
         cwd: extracted_cwd,
         message_count: ordinals.count(),
         parse_errors,
@@ -766,6 +772,25 @@ mod tests {
             Some(PathBuf::from("/home/user/project")),
             "Should extract cwd from first user message"
         );
+    }
+
+    #[test]
+    fn keeps_the_last_cwd_only_when_the_session_moved() {
+        let moved = [
+            user_msg("Hello", Some("/home/user/Work")),
+            assistant_msg("Hi"),
+            user_msg("More", Some("/home/user/Work/repo")),
+        ]
+        .join("\n");
+        let conv = parse_jsonl(&moved).unwrap().unwrap();
+        assert_eq!(conv.last_cwd, Some(PathBuf::from("/home/user/Work/repo")));
+
+        let stayed = [
+            user_msg("Hello", Some("/home/user/Work")),
+            user_msg("More", Some("/home/user/Work")),
+        ]
+        .join("\n");
+        assert_eq!(parse_jsonl(&stayed).unwrap().unwrap().last_cwd, None);
     }
 
     #[test]

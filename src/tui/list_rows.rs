@@ -152,12 +152,10 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
             .map_or(conv.source.list_label(), |origin| origin.label());
         format!("{label:<3}")
     });
-    let raw_project = conv
-        .project_name
-        .as_ref()
+    let raw_project = project_label(conv)
         .map(|name| match &badge {
             Some(badge) => format!("{badge} · {name}"),
-            None => name.to_string(),
+            None => name,
         })
         .unwrap_or_default();
     let has_title_or_summary = conv.custom_title.as_ref().is_some_and(|s| !s.is_empty())
@@ -226,7 +224,7 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     ListRow {
         project,
         badge_len,
-        hue_key: conv.project_name.clone().unwrap_or_default(),
+        hue_key: hue_key(conv).to_string(),
         custom_title,
         summary,
         padding,
@@ -238,6 +236,33 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
         preview,
         context,
     }
+}
+
+/// Separates the launch folder from where the session moved to.
+pub const MOVED_SEPARATOR: &str = " › ";
+
+/// The project a row names: the launch folder, plus where the session
+/// ended up when it moved (`Work › claude-history`).
+pub fn project_label(conv: &Conversation) -> Option<String> {
+    let name = conv.project_name.as_deref()?;
+    Some(match moved_to(conv) {
+        Some(moved) => format!("{name}{MOVED_SEPARATOR}{moved}"),
+        None => name.to_string(),
+    })
+}
+
+/// The name that picks a row's colour: where the work happened, so a
+/// session that moved into a repo matches sessions started there.
+pub fn hue_key(conv: &Conversation) -> std::borrow::Cow<'_, str> {
+    match moved_to(conv) {
+        Some(moved) => std::borrow::Cow::Owned(moved),
+        None => std::borrow::Cow::Borrowed(conv.project_name.as_deref().unwrap_or_default()),
+    }
+}
+
+fn moved_to(conv: &Conversation) -> Option<String> {
+    let moved = crate::history::format_short_name_from_path(conv.last_cwd.as_deref()?);
+    (Some(moved.as_str()) != conv.project_name.as_deref()).then_some(moved)
 }
 
 /// Lexical hidden-context applies unless a semantic result supplies its own
@@ -367,6 +392,7 @@ mod tests {
 
     fn conversation() -> Conversation {
         Conversation {
+            last_cwd: None,
             origin: None,
             source: Source::Claude,
             session_id: "session".to_owned(),
@@ -470,6 +496,25 @@ mod tests {
             left + row.padding + right,
             119,
             "one column of right margin"
+        );
+    }
+
+    #[test]
+    fn a_session_that_moved_names_both_folders_and_colours_by_the_second() {
+        let mut conv = conversation();
+        conv.project_name = Some("Work".to_string());
+        conv.last_cwd = Some(PathBuf::from("/home/me/Work/claude-history"));
+        let matcher = QueryMatcher::from_query("");
+
+        let row = project_row(&source(&conv, &matcher, 120), &RowEvidence::None, now());
+        assert_eq!(row.project, "Work › claude-history");
+        assert_eq!(row.hue_key, "claude-history");
+
+        conv.last_cwd = Some(PathBuf::from("/elsewhere/Work"));
+        let same_name = project_row(&source(&conv, &matcher, 120), &RowEvidence::None, now());
+        assert_eq!(
+            same_name.project, "Work",
+            "no arrow when the name is the same"
         );
     }
 

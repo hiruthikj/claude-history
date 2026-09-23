@@ -7,8 +7,8 @@ use crate::tui::app::{
 };
 use crate::tui::list_layout::{self, ListLayout};
 use crate::tui::list_rows::{
-    INDICATOR, ListRow, Recency, RowSource, format_duration, project_row, row_evidence,
-    semantic_rationale_label,
+    INDICATOR, ListRow, MOVED_SEPARATOR, Recency, RowSource, format_duration, hue_key,
+    project_label, project_row, row_evidence, semantic_rationale_label,
 };
 #[cfg(test)]
 use crate::tui::snippet::fit_around_matches;
@@ -446,6 +446,8 @@ const HEADER_SEPARATOR: &str = " \u{b7} ";
 #[derive(Debug)]
 struct ViewHeader {
     parts: Vec<(HeaderPart, String)>,
+    /// Picks the project's colour (see `list_rows::hue_key`).
+    hue_key: String,
     summary: Option<String>,
     /// The summary fits after the metadata on the first line.
     summary_inline: bool,
@@ -463,6 +465,7 @@ impl ViewHeader {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Unknown");
             return Self {
+                hue_key: stem.to_string(),
                 parts: vec![(HeaderPart::Project, stem.to_string())],
                 summary: None,
                 summary_inline: false,
@@ -471,10 +474,7 @@ impl ViewHeader {
         let width = width as usize;
         let mut parts = vec![(
             HeaderPart::Project,
-            conv.project_name
-                .as_deref()
-                .unwrap_or("Unknown")
-                .to_string(),
+            project_label(conv).unwrap_or_else(|| "Unknown".to_string()),
         )];
         if let Some(title) = &conv.custom_title {
             parts.push((HeaderPart::Title, title.clone()));
@@ -510,6 +510,7 @@ impl ViewHeader {
             .is_some_and(|summary| header_width(&parts) + separated(summary) <= width);
         Self {
             parts,
+            hue_key: hue_key(conv).into_owned(),
             summary: conv.summary.clone(),
             summary_inline,
         }
@@ -625,7 +626,9 @@ fn render_view_header(frame: &mut Frame, app: &App, state: &ViewState, area: Rec
             spans.push(Span::raw(HEADER_SEPARATOR));
         }
         let style = match part {
-            HeaderPart::Project => Style::default().fg(rgb(th().project_color(text))).bold(),
+            HeaderPart::Project => Style::default()
+                .fg(rgb(th().project_color(&header.hue_key)))
+                .bold(),
             HeaderPart::Title => Style::default().fg(rgb(th().custom_title)),
             HeaderPart::Model => Style::default().fg(rgb(th().model_color)),
             HeaderPart::Duration => Style::default().fg(rgb(th().duration_color)),
@@ -1552,9 +1555,14 @@ fn project_spans(
     styles: [Style; 3],
     match_style: Style,
 ) -> Vec<Span<'static>> {
-    let name_start = text
+    let mut name_start = text
         .strip_prefix(" \u{b7} ")
         .map_or(0, |_| " \u{b7} ".len());
+    // `Work › repo`: the launch folder is quiet like the joiner; the folder
+    // the session moved to is the name.
+    if let Some(moved) = text[name_start..].find(MOVED_SEPARATOR) {
+        name_start += moved + MOVED_SEPARATOR.len();
+    }
     let suffix_start = text[name_start..]
         .find('/')
         .map_or(text.len(), |slash| name_start + slash);
@@ -1774,6 +1782,7 @@ mod tests {
 
     fn test_conversation() -> Conversation {
         Conversation {
+            last_cwd: None,
             origin: None,
             source: crate::history::Source::Claude,
             session_id: "session".to_owned(),
