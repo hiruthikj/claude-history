@@ -524,7 +524,7 @@ impl App {
     }
 
     pub(super) fn toggle_workspace_filter(&mut self) {
-        if self.current_project_dir_name.is_some() {
+        if self.workspace.is_some() {
             self.workspace_filter = !self.workspace_filter;
             self.apply_scope_change();
         }

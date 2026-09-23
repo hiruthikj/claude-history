@@ -676,3 +676,66 @@ fn lexical_and_exact_search_omit_semantic_breakdowns() {
         }
     }
 }
+
+/// `--local` keeps the sessions whose project is the current directory,
+/// whichever agent wrote them: Pi names its session dirs `--<path>--`, which
+/// must still match Claude's encoding of the same path.
+#[test]
+fn local_agent_search_keeps_pi_sessions_of_the_current_project() {
+    let config = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config.path().join("projects")).unwrap();
+    // Pi's nested layout: <agent dir>/sessions/--<path>--/<file>.jsonl
+    let agent_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().canonicalize().unwrap();
+    let write_session = |cwd: &Path, id_suffix: &str| {
+        let dir = agent_dir.path().join("sessions").join(format!(
+            "--{}--",
+            cwd.to_string_lossy()
+                .trim_start_matches('/')
+                .replace('/', "-")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixture = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi/v3-branched.jsonl"),
+        )
+        .unwrap()
+        .replace("\"cwd\":\"/tmp/pi-v3\"", &format!("\"cwd\":{:?}", cwd))
+        .replace("0123456789ab", id_suffix);
+        std::fs::write(dir.join("session.jsonl"), fixture).unwrap();
+    };
+    write_session(&project_path, "0123456789ab");
+    // The same session under another project must not survive `--local`.
+    write_session(Path::new("/tmp/some-other-project"), "0123456789ac");
+
+    let search = |local: bool| {
+        let mut args = vec!["agent", "search", "active root question"];
+        if local {
+            args.push("--local");
+        }
+        let output = command()
+            .env("CLAUDE_CONFIG_DIR", config.path())
+            .env("PI_CODING_AGENT_DIR", agent_dir.path())
+            .env_remove("PI_CODING_AGENT_SESSION_DIR")
+            .current_dir(&project_path)
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("hit "))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(search(false).len(), 2, "both sessions load");
+    let local = search(true);
+    assert_eq!(local.len(), 1, "{local:?}");
+    assert!(local[0].contains("0123456789ab"), "{local:?}");
+}

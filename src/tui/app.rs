@@ -91,7 +91,7 @@ pub struct App {
     /// Whether workspace filter is active (only show current project's conversations)
     workspace_filter: bool,
     /// The encoded project directory name for the current workspace (for filtering)
-    current_project_dir_name: Option<String>,
+    workspace: Option<crate::history::Workspace>,
     /// Exact project names hidden from list-mode display
     excluded_projects: HashSet<String>,
     /// Channel to send commands to the background search worker
@@ -121,6 +121,9 @@ pub struct App {
     source_filter: Option<usize>,
     /// Project name the list is narrowed to (`keys.project`).
     project_filter: Option<String>,
+    /// A conversation was chosen and is being read; the list shows that
+    /// for the one frame drawn before the viewer opens.
+    opening: bool,
 }
 
 struct AppParts {
@@ -137,7 +140,7 @@ struct AppParts {
     single_file_mode: bool,
     keys: KeyBindings,
     workspace_filter: bool,
-    current_project_dir_name: Option<String>,
+    workspace: Option<crate::history::Workspace>,
     excluded_projects: HashSet<String>,
     search_tx: mpsc::Sender<SearchCommand>,
     search_rx: mpsc::Receiver<SearchResponse>,
@@ -174,7 +177,7 @@ impl App {
             single_file_mode: parts.single_file_mode,
             keys: parts.keys,
             workspace_filter: parts.workspace_filter,
-            current_project_dir_name: parts.current_project_dir_name,
+            workspace: parts.workspace,
             excluded_projects: parts.excluded_projects,
             search_tx: parts.search_tx,
             search_rx: parts.search_rx,
@@ -189,6 +192,7 @@ impl App {
             sources: crate::history::SourceSet::default(),
             source_filter: None,
             project_filter: None,
+            opening: false,
         }
     }
 
@@ -283,7 +287,7 @@ impl App {
             single_file_mode: false,
             keys,
             workspace_filter: false,
-            current_project_dir_name: None,
+            workspace: None,
             excluded_projects,
             search_tx,
             search_rx,
@@ -299,7 +303,7 @@ impl App {
         show_thinking: bool,
         keys: KeyBindings,
         workspace_filter: bool,
-        current_project_dir_name: Option<String>,
+        workspace: Option<crate::history::Workspace>,
         exclude_projects: Vec<String>,
         search_options: TuiSearchOptions,
     ) -> Self {
@@ -320,7 +324,7 @@ impl App {
             single_file_mode: false,
             keys,
             workspace_filter,
-            current_project_dir_name,
+            workspace,
             excluded_projects: exclude_projects.into_iter().collect(),
             search_tx,
             search_rx,
@@ -376,7 +380,7 @@ impl App {
             single_file_mode: true,
             keys,
             workspace_filter: false,
-            current_project_dir_name: None,
+            workspace: None,
             excluded_projects: HashSet::new(),
             search_tx,
             search_rx,
@@ -399,6 +403,11 @@ impl App {
 
         let new_filtered = self.filter_indices(start_idx..end_idx);
         self.filtered.extend(new_filtered);
+        // Batches arrive per project, not by time; show newest first while
+        // loading so the top of the list is already the right one.
+        let conversations = &self.conversations;
+        self.filtered
+            .sort_by(|&a, &b| conversations[b].timestamp.cmp(&conversations[a].timestamp));
         self.refresh_multiple_sources();
         self.bump_results_version();
 
@@ -444,6 +453,14 @@ impl App {
 
     pub fn loading_state(&self) -> &LoadingState {
         &self.loading_state
+    }
+
+    pub fn is_opening(&self) -> bool {
+        self.opening
+    }
+
+    pub(crate) fn set_opening(&mut self, opening: bool) {
+        self.opening = opening;
     }
 
     pub fn is_loading(&self) -> bool {
@@ -557,7 +574,7 @@ impl App {
     }
 
     pub fn has_project_context(&self) -> bool {
-        self.current_project_dir_name.is_some()
+        self.workspace.is_some()
     }
 
     pub fn semantic_toggle_available(&self) -> bool {

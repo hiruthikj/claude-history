@@ -21,6 +21,7 @@ pub mod pi;
 pub mod pi_loader;
 mod rename;
 pub mod sources;
+pub mod workspace;
 
 use crate::error::{AppError, Result};
 use chrono::{DateTime, Local};
@@ -38,6 +39,7 @@ pub(crate) use parser::process_conversation_file;
 pub use path::{convert_path_to_project_dir_name, format_short_name_from_path, is_same_project};
 pub use rename::append_session_rename;
 pub use sources::{SourceRoot, SourceSet};
+pub use workspace::Workspace;
 
 /// The kind of agent a transcript belongs to. Which root it came from is
 /// [`Conversation::origin`].

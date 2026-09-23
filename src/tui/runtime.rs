@@ -67,6 +67,9 @@ struct FrameState {
 enum EventLoopResult<T> {
     Continue,
     Break,
+    /// Open the selected conversation after one more frame, so the list
+    /// can say it is opening while the transcript is read.
+    OpenView,
     Return(T),
 }
 
@@ -148,8 +151,7 @@ where
                     if allow_list_click_enter
                         && app.handle_list_click(m.row, frame_state.frame_area)
                     {
-                        app.enter_view_mode(frame_state.content_width);
-                        return Ok(EventLoopResult::Break);
+                        return Ok(EventLoopResult::OpenView);
                     }
                 }
                 MouseEventKind::Moved => {
@@ -169,8 +171,7 @@ where
         && !app.is_loading()
         && app.selected().is_some()
     {
-        app.enter_view_mode(frame_state.content_width);
-        return Ok(EventLoopResult::Break);
+        return Ok(EventLoopResult::OpenView);
     }
 
     let Some(action) = app.handle_key(key.code, key.modifiers, frame_state.viewport_height) else {
@@ -186,7 +187,7 @@ pub fn run_with_loader(
     show_thinking: bool,
     keys: KeyBindings,
     workspace_filter: bool,
-    current_project_dir_name: Option<String>,
+    workspace: Option<crate::history::Workspace>,
     exclude_projects: Vec<String>,
     sources: crate::history::SourceSet,
     search_options: TuiSearchOptions,
@@ -197,7 +198,7 @@ pub fn run_with_loader(
         show_thinking,
         keys,
         workspace_filter,
-        current_project_dir_name,
+        workspace,
         exclude_projects,
         search_options,
     );
@@ -298,6 +299,12 @@ pub fn run_with_loader(
         match event_result {
             EventLoopResult::Continue => {}
             EventLoopResult::Break => continue,
+            EventLoopResult::OpenView => {
+                app.set_opening(true);
+                draw_frame(&app, &mut guard.terminal)?;
+                app.set_opening(false);
+                app.enter_view_mode(frame_state.content_width);
+            }
             EventLoopResult::Return(Some(action)) => return Ok((action, app.into_conversations())),
             EventLoopResult::Return(None) => {}
         }
@@ -329,7 +336,8 @@ pub fn run_single_file(
         )?;
 
         match event_result {
-            EventLoopResult::Continue => {}
+            // Single-file mode has no list to open from.
+            EventLoopResult::Continue | EventLoopResult::OpenView => {}
             EventLoopResult::Break => continue,
             EventLoopResult::Return(Some(Action::Quit)) => return Ok(()),
             EventLoopResult::Return(None) => {}

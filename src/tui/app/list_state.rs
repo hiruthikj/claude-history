@@ -15,10 +15,7 @@ impl App {
     pub(super) fn list_scope(&self) -> ListScope<'_> {
         ListScope {
             excluded_projects: &self.excluded_projects,
-            workspace: self
-                .current_project_dir_name
-                .as_deref()
-                .filter(|_| self.workspace_filter),
+            workspace: self.workspace.as_ref().filter(|_| self.workspace_filter),
             source: self.source_filter_root(),
             project: self.project_filter.as_deref(),
         }
@@ -194,8 +191,8 @@ impl App {
 #[derive(Clone, Copy)]
 pub(super) struct ListScope<'a> {
     pub excluded_projects: &'a HashSet<String>,
-    /// Encoded Claude project dir of the cwd, when narrowed to it.
-    pub workspace: Option<&'a str>,
+    /// The cwd's project, when narrowed to it.
+    pub workspace: Option<&'a crate::history::Workspace>,
     pub source: Option<&'a crate::history::SourceRoot>,
     /// A project name, when narrowed to one.
     pub project: Option<&'a str>,
@@ -206,19 +203,13 @@ impl ListScope<'_> {
     where
         I: IntoIterator<Item = usize>,
     {
-        // Resolved at most once per pass, and only if a Pi/OMP row needs it.
-        let current_dir = std::cell::OnceCell::new();
         indices
             .into_iter()
-            .filter(|&idx| self.admits(&conversations[idx], &current_dir))
+            .filter(|&idx| self.admits(&conversations[idx]))
             .collect()
     }
 
-    fn admits(
-        &self,
-        conversation: &Conversation,
-        current_dir: &std::cell::OnceCell<Option<PathBuf>>,
-    ) -> bool {
+    fn admits(&self, conversation: &Conversation) -> bool {
         if let Some(root) = self.source
             && !conversation
                 .origin
@@ -239,32 +230,8 @@ impl ListScope<'_> {
         {
             return false;
         }
-        let Some(project_dir_name) = self.workspace else {
-            return true;
-        };
-        if conversation.source != crate::history::Source::Claude {
-            let current = current_dir.get_or_init(|| {
-                let current = std::env::current_dir().ok()?;
-                Some(current.canonicalize().unwrap_or(current))
-            });
-            let Some(current) = current else {
-                return false;
-            };
-            return conversation
-                .project_path
-                .as_ref()
-                .or(conversation.cwd.as_ref())
-                .is_some_and(|path| {
-                    path.canonicalize().unwrap_or_else(|_| path.clone()) == *current
-                });
-        }
-        conversation
-            .path
-            .parent()
-            .and_then(|p| p.file_name())
-            .is_some_and(|name| {
-                crate::history::path::is_same_project(&name.to_string_lossy(), project_dir_name)
-            })
+        self.workspace
+            .is_none_or(|workspace| workspace.contains(conversation))
     }
 }
 

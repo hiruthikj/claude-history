@@ -317,9 +317,14 @@ fn word_window(
         && let Some(space) = text[start..match_start]
             .char_indices()
             .take(max_snap)
-            .find(|(_, ch)| ch.is_whitespace())
+            .find(|(_, ch)| is_break(*ch))
     {
         start += space.0 + space.1.len_utf8();
+        // Skip the rest of a run like `":"` so the fragment opens on a word.
+        start += text[start..match_start]
+            .char_indices()
+            .find(|(_, ch)| !is_break(*ch))
+            .map_or(match_start - start, |(offset, _)| offset);
     }
 
     let mut end = text[match_end..]
@@ -332,11 +337,19 @@ fn word_window(
             .char_indices()
             .rev()
             .take(max_snap)
-            .find(|(_, ch)| ch.is_whitespace())
+            .find(|(_, ch)| is_break(*ch))
     {
         end = match_end + space.0;
+        end = match_end + text[match_end..end].trim_end_matches(is_break).len();
     }
     start..end
+}
+
+/// Where a fragment may be cut: whitespace, and the punctuation that
+/// separates words in JSON tool input (`"content":"…"`), which has no
+/// spaces to snap to.
+fn is_break(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '"' | ':' | ',' | '{' | '}' | '[' | ']')
 }
 
 /// Sanitize preview text by removing XML-like tags and normalizing whitespace
@@ -475,6 +488,31 @@ mod tests {
         let snippet = context(&full, "preview", "tui", 120).unwrap();
         assert_eq!(snippet.matches("fuzzy").count(), 1, "{snippet}");
         assert!(snippet.contains("other tui mention"), "{snippet}");
+    }
+
+    #[test]
+    fn json_fragments_open_and_close_on_a_word() {
+        let json = r#"{"subagent_type":"general-purpose","description":"find","content":"I need a mattress for daily use","instructions":"compare"}"#;
+        let full = format!("preview {} {json}", "p ".repeat(40));
+        let words = json
+            .split(|ch: char| !ch.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        for width in 16..=80 {
+            let Some(snippet) = context(&full, "preview", "mattress", width) else {
+                continue;
+            };
+            let body = snippet.trim_matches('…');
+            let mut edges = body
+                .split(|ch: char| !ch.is_alphanumeric())
+                .filter(|word| !word.is_empty());
+            let first = edges.next().unwrap();
+            let last = edges.next_back().unwrap_or(first);
+            assert!(
+                words.contains(&first) && words.contains(&last),
+                "{width}: {snippet}"
+            );
+        }
     }
 
     #[test]

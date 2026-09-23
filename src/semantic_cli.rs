@@ -439,31 +439,19 @@ fn semantic_index_candidates(
 }
 
 fn select_conversations(conversations: &[Conversation], local: bool) -> Result<Vec<&Conversation>> {
-    let current_project_dir_name = if local {
-        let dir = std::env::current_dir().map_err(AppError::Io)?;
-        Some(crate::history::convert_path_to_project_dir_name(&dir))
+    let workspace = if local {
+        Some(crate::history::Workspace::current().map_err(AppError::Io)?)
     } else {
         None
     };
-
-    let mut selected = Vec::new();
-    for conversation in conversations {
-        if let Some(ref project) = current_project_dir_name {
-            let matches = conversation
-                .path
-                .parent()
-                .and_then(|p| p.file_name())
-                .is_some_and(|name| {
-                    crate::history::is_same_project(&name.to_string_lossy(), project)
-                });
-            if !matches {
-                continue;
-            }
-        }
-
-        selected.push(conversation);
-    }
-    Ok(selected)
+    Ok(conversations
+        .iter()
+        .filter(|conversation| {
+            workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.contains(conversation))
+        })
+        .collect())
 }
 
 fn no_conversations_message(local: bool) -> &'static str {

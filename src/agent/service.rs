@@ -310,17 +310,15 @@ impl AgentService {
                 && time.matches(conversation.timestamp)
         });
         conversations.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        let current_project_dir_name = if settings.scope == agent::search::AgentSearchScope::Local {
-            std::env::current_dir()
-                .ok()
-                .map(|dir| history::convert_path_to_project_dir_name(&dir))
+        let workspace = if settings.scope == agent::search::AgentSearchScope::Local {
+            history::Workspace::current().ok()
         } else {
             None
         };
         let scoped = agent::search::scoped_conversation_inputs(
             &conversations,
             settings.scope,
-            current_project_dir_name.as_deref(),
+            workspace.as_ref(),
         )?;
         let query = ParsedQuery::parse(&args.query);
         let request = agent::search::AgentSearchRequest {
@@ -334,7 +332,7 @@ impl AgentService {
             budget: settings.budget,
         };
         let (mut keys, mut base_warnings) =
-            discover_agent_keys(&settings.sources, current_project_dir_name.as_deref())?;
+            discover_agent_keys(&settings.sources, workspace.as_ref())?;
         keys.retain(|key| !project_is_excluded(&key.path, &settings.exclude_projects));
         if time.is_active() {
             // Key discovery walks the projects directory independently, so
@@ -529,17 +527,18 @@ impl AgentService {
 
 fn discover_agent_keys(
     sources: &history::SourceSet,
-    project_filter: Option<&str>,
+    workspace: Option<&history::Workspace>,
 ) -> Result<(Vec<agent::refs::AgentConversationKey>, Vec<AgentWarning>)> {
     let mut keys = Vec::new();
     let mut warnings = Vec::new();
     for root in sources.roots() {
         match root.kind {
             history::Source::Claude => {
-                discover_claude_keys(root, project_filter, &mut keys, &mut warnings)?
+                discover_claude_keys(root, workspace, &mut keys, &mut warnings)?
             }
-            history::Source::Pi => discover_pi_keys(root, project_filter, &mut keys),
-            history::Source::Omp => discover_omp_keys(root, project_filter, &mut keys),
+            history::Source::Pi | history::Source::Omp => {
+                discover_session_keys(root, workspace, &mut keys)
+            }
         }
     }
     let any_claude_root = sources
@@ -561,7 +560,7 @@ fn discover_agent_keys(
 
 fn discover_claude_keys(
     source_root: &history::SourceRoot,
-    project_filter: Option<&str>,
+    workspace: Option<&history::Workspace>,
     keys: &mut Vec<agent::refs::AgentConversationKey>,
     warnings: &mut Vec<AgentWarning>,
 ) -> Result<()> {
@@ -597,7 +596,7 @@ fn discover_claude_keys(
         let Some(project_name) = project_path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if project_filter.is_some_and(|filter| !history::is_same_project(project_name, filter)) {
+        if workspace.is_some_and(|workspace| !workspace.contains_claude_project(project_name)) {
             continue;
         }
         let entries = match std::fs::read_dir(&project_path) {
@@ -649,108 +648,55 @@ fn discover_claude_keys(
     Ok(())
 }
 
-fn discover_pi_keys(
+/// Pi and OMP sessions carry their project in a header, not in the
+/// directory they are filed under.
+fn discover_session_keys(
     source_root: &history::SourceRoot,
-    project_filter: Option<&str>,
+    workspace: Option<&history::Workspace>,
     keys: &mut Vec<agent::refs::AgentConversationKey>,
 ) {
-    if let Ok(pi_files) = history::pi_loader::discover_files(&source_root.pi_root()) {
-        let current = std::env::current_dir()
-            .ok()
-            .map(|path| path.canonicalize().unwrap_or(path));
-        for path in pi_files {
-            let Ok(Some(projection)) = history::pi::parse_file(&path) else {
-                continue;
-            };
-            if projection.source != history::Source::Pi {
-                continue;
-            }
-            if let Some(filter) = project_filter {
-                let cwd = projection
-                    .header
-                    .cwd
-                    .canonicalize()
-                    .unwrap_or_else(|_| projection.header.cwd.clone());
-                let current_matches_filter = current.as_ref().is_some_and(|current| {
-                    history::is_same_project(
-                        &history::convert_path_to_project_dir_name(current),
-                        filter,
-                    )
-                });
-                if !current_matches_filter || current.as_ref() != Some(&cwd) {
-                    continue;
-                }
-            }
-            let project_identity = projection
-                .header
-                .cwd
-                .canonicalize()
-                .unwrap_or(projection.header.cwd)
-                .to_string_lossy()
-                .into_owned();
-            let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            keys.push(agent::refs::AgentConversationKey {
-                source: history::Source::Pi,
-                project_dir_name: project_identity,
-                session_filename: filename.to_owned(),
-                session_id: projection.header.id,
-                path,
-                origin: source_root.name.clone(),
-            });
+    let kind = source_root.kind;
+    let files = match kind {
+        history::Source::Omp => history::omp_loader::discover_files(&source_root.omp_root()),
+        _ => history::pi_loader::discover_files(&source_root.pi_root()),
+    };
+    let Ok(files) = files else {
+        return;
+    };
+    for path in files {
+        let projection = match kind {
+            history::Source::Omp => history::pi::parse_omp_file(&path),
+            _ => history::pi::parse_file(&path),
+        };
+        let Ok(Some(projection)) = projection else {
+            continue;
+        };
+        // An OMP file under a Pi root is OMP's to list.
+        if kind == history::Source::Pi && projection.source != history::Source::Pi {
+            continue;
         }
-    }
-}
-
-fn discover_omp_keys(
-    source_root: &history::SourceRoot,
-    project_filter: Option<&str>,
-    keys: &mut Vec<agent::refs::AgentConversationKey>,
-) {
-    if let Ok(omp_files) = history::omp_loader::discover_files(&source_root.omp_root()) {
-        let current = std::env::current_dir()
-            .ok()
-            .map(|path| path.canonicalize().unwrap_or(path));
-        for path in omp_files {
-            let Ok(Some(projection)) = history::pi::parse_omp_file(&path) else {
-                continue;
-            };
-            if let Some(filter) = project_filter {
-                let cwd = projection
-                    .header
-                    .cwd
-                    .canonicalize()
-                    .unwrap_or_else(|_| projection.header.cwd.clone());
-                let current_matches_filter = current.as_ref().is_some_and(|current| {
-                    history::is_same_project(
-                        &history::convert_path_to_project_dir_name(current),
-                        filter,
-                    )
-                });
-                if !current_matches_filter || current.as_ref() != Some(&cwd) {
-                    continue;
-                }
-            }
-            let project_identity = projection
-                .header
-                .cwd
-                .canonicalize()
-                .unwrap_or(projection.header.cwd)
-                .to_string_lossy()
-                .into_owned();
-            let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            keys.push(agent::refs::AgentConversationKey {
-                source: history::Source::Omp,
-                project_dir_name: project_identity,
-                session_filename: filename.to_owned(),
-                session_id: projection.header.id,
-                path,
-                origin: source_root.name.clone(),
-            });
+        if workspace.is_some_and(|workspace| !workspace.is_session_cwd(&projection.header.cwd)) {
+            continue;
         }
+        // Part of the `ch_` digest: keep it the canonical cwd.
+        let project_identity = projection
+            .header
+            .cwd
+            .canonicalize()
+            .unwrap_or(projection.header.cwd)
+            .to_string_lossy()
+            .into_owned();
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        keys.push(agent::refs::AgentConversationKey {
+            source: kind,
+            project_dir_name: project_identity,
+            session_filename: filename.to_owned(),
+            session_id: projection.header.id,
+            path,
+            origin: source_root.name.clone(),
+        });
     }
 }
 

@@ -649,30 +649,25 @@ pub fn run_global_hybrid_search(
 pub fn scoped_conversation_inputs(
     conversations: &[Conversation],
     scope: AgentSearchScope,
-    current_project_dir_name: Option<&str>,
+    workspace: Option<&crate::history::Workspace>,
 ) -> Result<Vec<usize>> {
-    let mut indices = Vec::new();
-    for (index, conversation) in conversations.iter().enumerate() {
-        if scope == AgentSearchScope::Local {
-            let Some(project) = current_project_dir_name else {
-                return Err(AppError::ConfigError(
-                    "local agent search requires a current project".to_string(),
-                ));
-            };
-            let matches = conversation
-                .path
-                .parent()
-                .and_then(|p| p.file_name())
-                .is_some_and(|name| {
-                    crate::history::is_same_project(&name.to_string_lossy(), project)
-                });
-            if !matches {
-                continue;
-            }
+    let workspace = match (scope, workspace) {
+        (AgentSearchScope::Local, None) => {
+            return Err(AppError::ConfigError(
+                "local agent search requires a current project".to_string(),
+            ));
         }
-        indices.push(index);
-    }
-    Ok(indices)
+        (AgentSearchScope::Local, Some(workspace)) => Some(workspace),
+        _ => None,
+    };
+    Ok(conversations
+        .iter()
+        .enumerate()
+        .filter(|(_, conversation)| {
+            workspace.is_none_or(|workspace| workspace.contains(conversation))
+        })
+        .map(|(index, _)| index)
+        .collect())
 }
 
 pub fn shortlist_limit(top: usize) -> usize {

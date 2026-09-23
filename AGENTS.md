@@ -124,6 +124,13 @@ after the terminal guard is dropped.
   `ch_` digests do not include the source; a session UUID present in two roots
   under the same project dir resolves as an ambiguous ref. `origin=<name>` is
   emitted only for named sources, so single-source agent output is unchanged.
+- "This project" is `history/workspace.rs::Workspace` (the cwd, resolved
+  once): Claude transcripts match by encoded project dir (worktrees count),
+  Pi/OMP sessions by their header's cwd. The TUI `Tab` scope (via
+  `tui/app/list_state.rs::ListScope`, which also holds exclusions, the source
+  and the `Alt+P` project filter), `--local` in agent search and
+  `--debug-search`/`--semantic-search`, and agent key discovery all ask it;
+  do not compare project dir names directly.
 - Claude `timestamp` is file mtime, so rename (which appends records) or any
   tool that touches the file reorders the list and invalidates its cache entry.
 
@@ -240,6 +247,9 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
   by `render_hint_bar`: `fit_hints` drops whole hints, highest priority number
   first, so a narrow terminal never shows a cut-off label. Add a hint there
   rather than pushing spans onto the line.
+- Opening a conversation is two-phase (`runtime.rs::EventLoopResult::OpenView`):
+  the loop draws one "Opening conversation…" frame, then calls
+  `enter_view_mode`, because the transcript read blocks the loop.
 - Opening a list hit seeds the viewer search from the list query
   (`view_state.rs::seed_view_search_from_list_query`): quoted literal, then
   the whole unquoted query, then its longest word.

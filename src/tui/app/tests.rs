@@ -48,9 +48,7 @@ fn mixed_sources_are_identified_and_pi_local_filter_uses_header_cwd() {
     let mut app = app(vec![claude, pi], vec![]);
     assert!(app.has_multiple_sources());
     app.workspace_filter = true;
-    app.current_project_dir_name = Some(crate::history::convert_path_to_project_dir_name(
-        &std::env::current_dir().unwrap(),
-    ));
+    app.workspace = Some(crate::history::Workspace::current().unwrap());
     let filtered = app.filter_indices(0..app.conversations.len());
     assert_eq!(filtered, vec![1]);
 }
@@ -446,7 +444,9 @@ fn exclude_projects_apply_before_workspace_filter() {
         vec!["Hidden"],
     );
     app.workspace_filter = true;
-    app.current_project_dir_name = Some("-tmp-project".to_string());
+    app.workspace = Some(crate::history::Workspace::at(std::path::Path::new(
+        "/tmp/project",
+    )));
     app.update_filter();
 
     assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
@@ -1283,7 +1283,9 @@ fn semantic_scope_indices_apply_scope() {
             ..Default::default()
         },
     );
-    app.current_project_dir_name = Some("-tmp-visible".to_string());
+    app.workspace = Some(crate::history::Workspace::at(std::path::Path::new(
+        "/tmp/visible",
+    )));
     app.workspace_filter = true;
 
     let indices = app.semantic_scope_indices();
@@ -1762,7 +1764,9 @@ fn configured_ctrl_t_binding_takes_precedence_over_semantic_toggle() {
 fn workspace_toggle_dispatches_new_semantic_request() {
     let (mut app, request_rx, _response_tx) =
         app_with_single_visible_conversation_and_semantic_worker();
-    app.current_project_dir_name = Some("-tmp-visible".to_string());
+    app.workspace = Some(crate::history::Workspace::at(std::path::Path::new(
+        "/tmp/visible",
+    )));
     app.query = "needle".to_string();
 
     app.toggle_workspace_filter();
@@ -1981,4 +1985,33 @@ fn project_key_narrows_to_the_selected_rows_project_and_back() {
     app.handle_key(KeyCode::Char('p'), KeyModifiers::ALT, 10);
     assert_eq!(app.project_filter(), None);
     assert_eq!(app.filtered().len(), 2);
+}
+
+#[test]
+fn streamed_batches_list_newest_first_while_loading() {
+    let mut app = App::new_loading_with_options(
+        ToolDisplayMode::Truncated,
+        false,
+        KeyBindings::default(),
+        false,
+        None,
+        vec![],
+        TuiSearchOptions::default(),
+    );
+    let mut conversations = sort_conversations();
+    let new = conversations.pop().unwrap();
+    let old = conversations.pop().unwrap();
+    // The older project arrives first, as a project batch can.
+    app.append_conversations(vec![old]);
+    app.append_conversations(vec![new]);
+
+    assert!(app.is_loading());
+    assert_eq!(
+        filtered_session_ids(&app),
+        vec![
+            "22222222-2222-4222-8222-222222222222",
+            "11111111-1111-4111-8111-111111111111"
+        ]
+    );
+    assert_eq!(app.selected, Some(0));
 }

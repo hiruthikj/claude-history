@@ -43,6 +43,11 @@
   injects are labelled `Skill` / `System` instead of `You`
 - `Alt+P` (`[keys].project`) narrows the list to the selected row's project
   and back
+- `agent search --local` (and `--debug-search`/`--semantic-search --local`)
+  now keep Pi and OMP sessions of the current project, as the TUI already did
+- The list says "Opening conversation…" while a transcript is read, lists
+  newest first while still loading, and JSON search snippets start and end
+  on a word instead of `ntent":"…`
 - `[display] theme = "dark" | "light"` forces a palette when terminal
   detection guesses wrong
 - `--generate-semantic-cache` rejects `--local`, which would have left other

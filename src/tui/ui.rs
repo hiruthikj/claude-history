@@ -235,6 +235,10 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let dim_key_style = Style::default().fg(rgb(th().dim_key));
     let dim_label_style = Style::default().fg(rgb(th().dim_label));
 
+    if app.is_opening() {
+        render_activity_status(frame, "Opening conversation\u{2026}", area);
+        return;
+    }
     if let Some(status) = app.semantic_activity_status_text() {
         render_activity_status(frame, &status, area);
         return;
@@ -2237,6 +2241,24 @@ mod tests {
         let narrower = ViewHeader::new(Some(&conv), &path, inline_width as u16 - 1);
         assert!(!narrower.summary_inline);
         assert_eq!(narrower.height(), 3);
+    }
+
+    #[test]
+    fn list_status_bar_says_when_a_conversation_is_opening() {
+        let mut app = App::new(
+            vec![test_conversation()],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.set_opening(true);
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_list_status_bar(frame, &app, frame.area()))
+            .unwrap();
+        assert!(row_text(&terminal, 0).contains("Opening conversation"));
     }
 
     #[test]
