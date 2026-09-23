@@ -36,7 +36,8 @@
   `**`/backtick markup, and narrow lists give the duration's room to the title
 - Loading, agent search and opening a conversation spend 30–45% less CPU:
   Claude transcripts are no longer fully parsed a second time to rule out
-  the Pi/OMP format
+  the Pi/OMP format, and agent search reads its shortlisted transcripts in
+  parallel (another 20–25% off a typical search)
 - The viewer's `}` / `{` jump between the prompts you typed, skipping tool
   calls, replies and injected text; skill bodies and other text Claude Code
   injects are labelled `Skill` / `System` instead of `You`

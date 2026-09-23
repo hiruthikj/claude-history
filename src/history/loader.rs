@@ -709,9 +709,11 @@ pub fn load_conversations(
             .collect();
 
     // Separate conversations from empty results (for negative caching)
-    for (conv, _, _, _) in &parse_results {
-        if let Some(conv) = conv {
-            conversations.push(conv.clone());
+    let mut empty_results = Vec::new();
+    for (conv, filename, file_size, modified) in parse_results {
+        match conv {
+            Some(conv) => conversations.push(conv),
+            None => empty_results.push((filename, file_size, modified)),
         }
     }
 
@@ -737,6 +739,12 @@ pub fn load_conversations(
     if dirty {
         let mut new_cache: HashMap<String, cache::CacheEntry> = HashMap::new();
 
+        let meta_by_name = files_with_meta
+            .iter()
+            .filter_map(|(path, modified, file_size)| {
+                Some((path.file_name()?, (modified, file_size)))
+            })
+            .collect::<HashMap<_, _>>();
         // Add existing conversations (both cache hits and fresh parses)
         for conv in &conversations {
             let filename = conv
@@ -745,24 +753,23 @@ pub fn load_conversations(
                 .and_then(|f| f.to_str())
                 .unwrap_or("unknown");
 
-            if let Some((_, modified, file_size)) = files_with_meta
-                .iter()
-                .find(|(p, _, _)| p.file_name() == conv.path.file_name())
+            if let Some((modified, file_size)) = conv
+                .path
+                .file_name()
+                .and_then(|name| meta_by_name.get(name))
                 && let Some(mtime) = modified
             {
                 new_cache.insert(
                     filename.to_owned(),
-                    cache::entry_from_conversation(conv, *file_size, *mtime),
+                    cache::entry_from_conversation(conv, **file_size, *mtime),
                 );
             }
         }
 
         // Add negative cache entries for files that parsed to nothing
-        for (conv, filename, file_size, modified) in &parse_results {
-            if conv.is_none()
-                && let Some(mtime) = modified
-            {
-                new_cache.insert(filename.to_owned(), cache::empty_entry(*file_size, *mtime));
+        for (filename, file_size, modified) in empty_results {
+            if let Some(mtime) = modified {
+                new_cache.insert(filename, cache::empty_entry(file_size, mtime));
             }
         }
 

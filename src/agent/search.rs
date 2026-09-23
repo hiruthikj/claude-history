@@ -481,7 +481,7 @@ pub fn run_global_lexical_search(
     conversations: &[Conversation],
     keys: &[AgentConversationKey],
     ranked_indices: &[usize],
-    load_transcript: impl Fn(&AgentConversationKey) -> Result<AgentTranscript>,
+    load_transcript: impl Fn(&AgentConversationKey) -> Result<AgentTranscript> + Sync,
 ) -> Result<AgentSearchOutput> {
     run_global_lexical_search_reporting(
         request,
@@ -498,7 +498,7 @@ pub fn run_global_lexical_search_reporting(
     conversations: &[Conversation],
     keys: &[AgentConversationKey],
     ranked_indices: &[usize],
-    load_transcript: impl Fn(&AgentConversationKey) -> Result<AgentTranscript>,
+    load_transcript: impl Fn(&AgentConversationKey) -> Result<AgentTranscript> + Sync,
     mut report_error: impl FnMut(&AgentConversationKey, &AppError),
 ) -> Result<AgentSearchOutput> {
     let retrieval_mode = lexical_retrieval_mode(request.mode);
@@ -510,15 +510,31 @@ pub fn run_global_lexical_search_reporting(
         .collect::<HashMap<_, _>>();
     let mut hits = Vec::new();
     let mut transcripts_loaded = 0;
+    let candidates = ranked_indices
+        .iter()
+        .take(limit)
+        .filter_map(|&index| {
+            let conversation = conversations.get(index)?;
+            let resolved = resolved_by_path.get(&conversation.path)?;
+            Some((conversation, resolved))
+        })
+        .collect::<Vec<_>>();
+    // Transcripts are read a batch at a time in parallel, then consumed in
+    // rank order with the same early exits as a sequential walk, so output
+    // and reported errors are unchanged; at most one batch is read in vain.
+    let batch_size = rayon::current_num_threads().max(1);
+    let mut loaded = candidates.chunks(batch_size).flat_map(|batch| {
+        use rayon::prelude::*;
+        batch
+            .par_iter()
+            .map(|&(conversation, resolved)| {
+                (conversation, resolved, load_transcript(&resolved.key))
+            })
+            .collect::<Vec<_>>()
+    });
 
-    for index in ranked_indices.iter().take(limit).copied() {
-        let Some(conversation) = conversations.get(index) else {
-            continue;
-        };
-        let Some(resolved) = resolved_by_path.get(&conversation.path) else {
-            continue;
-        };
-        let transcript = match load_transcript(&resolved.key) {
+    for (conversation, resolved, transcript) in loaded.by_ref() {
+        let transcript = match transcript {
             Ok(transcript) => transcript,
             Err(error) => {
                 report_error(&resolved.key, &error);

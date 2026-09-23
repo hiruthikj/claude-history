@@ -217,11 +217,13 @@ fn project_is_excluded(path: &Path, excluded: &[String]) -> bool {
 
 #[derive(Default)]
 pub struct AgentService {
-    transcripts: RefCell<
+    /// Shared by the parallel transcript reads in global search; the lock
+    /// is held only to look up or insert, never while a file is parsed.
+    transcripts: std::sync::Mutex<
         HashMap<PathBuf, std::result::Result<agent::transcript::AgentTranscript, AgentError>>,
     >,
     #[cfg(test)]
-    transcript_parse_count: std::cell::Cell<usize>,
+    transcript_parse_count: std::sync::atomic::AtomicUsize,
 }
 
 pub fn execute(command: AgentCommand, source_filters: &[String]) -> Result<String> {
@@ -261,12 +263,12 @@ impl AgentService {
     }
 
     fn load_transcript(&self, path: &Path) -> Result<agent::transcript::AgentTranscript> {
-        if let Some(cached) = self.transcripts.borrow().get(path) {
+        if let Some(cached) = self.transcript_cache().get(path) {
             return cached.clone().map_err(AppError::from);
         }
         #[cfg(test)]
         self.transcript_parse_count
-            .set(self.transcript_parse_count.get() + 1);
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let loaded = agent::transcript::AgentTranscript::load(path).map_err(|error| match error {
             AppError::Agent(error) => error,
             AppError::Io(error) => AgentError::io(
@@ -281,10 +283,21 @@ impl AgentService {
                 AgentError::malformed_transcript(Some(&path.to_string_lossy()), error.to_string())
             }
         });
-        self.transcripts
-            .borrow_mut()
+        self.transcript_cache()
             .insert(path.to_path_buf(), loaded.clone());
         loaded.map_err(AppError::from)
+    }
+
+    fn transcript_cache(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        HashMap<PathBuf, std::result::Result<agent::transcript::AgentTranscript, AgentError>>,
+    > {
+        // A panic while holding the lock leaves the map itself consistent.
+        self.transcripts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn run_search(&self, args: &cli::AgentSearchArgs, settings: &AgentSettings) -> Result<String> {
@@ -1919,7 +1932,12 @@ tools = true
             .unwrap();
 
         assert!(output.contains("cached message"));
-        assert_eq!(service.transcript_parse_count.get(), 1);
+        assert_eq!(
+            service
+                .transcript_parse_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]
