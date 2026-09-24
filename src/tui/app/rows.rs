@@ -45,7 +45,8 @@ impl App {
             // screen belong to the previous result set; keep their evidence
             // rather than scanning rows that are about to be replaced. The
             // response goes through apply_filtered, which bumps the version.
-            if self.search_in_flight {
+            // The same holds while a typed query waits out the debounce.
+            if self.search_in_flight || self.search_due.is_some() {
                 return;
             }
             self.row_evidence.key = key;

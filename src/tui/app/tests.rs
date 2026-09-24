@@ -857,7 +857,7 @@ fn semantic_search_dispatches_lexical_fallback() {
 }
 
 #[test]
-fn semantic_keypress_dispatches_immediately() {
+fn semantic_keypress_dispatches_once_typing_pauses() {
     let mut app = app_with_options(
         vec![conversation(
             Some("Visible"),
@@ -878,6 +878,10 @@ fn semantic_keypress_dispatches_immediately() {
     let previous_generation = app.search_generation();
 
     app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
+    // The keystroke only schedules the search; it runs once typing pauses.
+    assert!(last_semantic_search(&drain_semantic_commands(&request_rx)).is_none());
+    assert_eq!(app.search_generation(), previous_generation);
+    app.run_scheduled_search_for_test();
 
     let commands = drain_semantic_commands(&request_rx);
     let request = last_semantic_search(&commands).expect("semantic search");
@@ -972,6 +976,7 @@ fn semantic_keypress_preserves_browse_rows_while_pending() {
         app_with_single_visible_conversation_and_semantic_worker();
 
     app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
+    app.run_scheduled_search_for_test();
 
     assert!(last_semantic_search(&drain_semantic_commands(&request_rx)).is_some());
     assert_eq!(filtered_projects(&app), vec![Some("Visible")]);
@@ -1145,6 +1150,7 @@ fn semantic_keypress_does_not_clone_full_corpus_on_ui_thread() {
     app.semantic_search.worker_rx = Some(response_rx);
 
     app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, 10);
+    app.run_scheduled_search_for_test();
 
     let commands = drain_semantic_commands(&request_rx);
     let corpus = commands
@@ -1162,6 +1168,7 @@ fn semantic_keypress_does_not_clone_full_corpus_on_ui_thread() {
     assert_eq!(request.1, "n");
 
     app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE, 10);
+    app.run_scheduled_search_for_test();
 
     let commands = drain_semantic_commands(&request_rx);
     assert!(
@@ -1523,6 +1530,7 @@ fn typing_preserves_query_embedding_activity_until_replacement_reports_progress(
 
         for c in ['e', 'e', 'd'] {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE, 10);
+            app.run_scheduled_search_for_test();
             assert_eq!(app.semantic_activity_status_text(), activity);
         }
 
@@ -2029,4 +2037,35 @@ fn streamed_batches_list_newest_first_while_loading() {
         "33333333-3333-4333-8333-333333333333"
     );
     assert_eq!(filtered_session_ids(&app)[app.selected.unwrap()], picked);
+}
+
+#[test]
+fn typing_waits_for_a_pause_before_searching() {
+    let mut app = app(sort_conversations(), vec![]);
+    let generation = app.search_generation();
+
+    for c in "old".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE, 10);
+    }
+    assert!(app.search_debounce_remaining().is_some());
+    app.run_due_search();
+    assert_eq!(app.search_generation(), generation, "searched mid-typing");
+
+    std::thread::sleep(super::search_state::SEARCH_DEBOUNCE);
+    app.run_due_search();
+    assert_eq!(app.search_generation(), generation + 1);
+    assert_eq!(app.search_debounce_remaining(), None);
+    wait_for_search(&mut app);
+}
+
+#[test]
+fn clearing_the_query_restores_the_list_without_waiting() {
+    let mut app = app(sort_conversations(), vec![]);
+    let all = app.filtered().len();
+    app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE, 10);
+    app.settle_scheduled_search(std::time::Duration::from_secs(5));
+
+    app.handle_key(KeyCode::Backspace, KeyModifiers::NONE, 10);
+    assert_eq!(app.search_debounce_remaining(), None);
+    assert_eq!(app.filtered().len(), all);
 }

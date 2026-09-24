@@ -46,7 +46,6 @@ pub struct Theme {
     pub context_highlight: Rgb,
 
     // List metadata
-    pub dot_separator: Rgb,
     pub msg_count: Rgb,
     pub header_summary: Rgb,
     pub timestamp_now: Rgb,
@@ -109,7 +108,6 @@ impl Theme {
             context_base: (100, 100, 100),
             context_highlight: (60, 160, 140),
 
-            dot_separator: (70, 70, 70),
             msg_count: (110, 110, 110),
             header_summary: (180, 180, 180),
             timestamp_now: (78, 201, 176), // Bright teal (same as accent)
@@ -174,7 +172,6 @@ impl Theme {
             context_base: (120, 130, 138),          // Light-medium gray
             context_highlight: (13, 128, 118),      // Same as accent
 
-            dot_separator: (168, 176, 182),    // Cool light gray
             msg_count: (105, 115, 122),        // Cool medium gray
             header_summary: (88, 101, 112),    // Matches text_secondary
             timestamp_now: (13, 128, 118),     // Same as accent

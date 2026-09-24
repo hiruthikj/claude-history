@@ -102,6 +102,9 @@ pub struct App {
     search_generation: u64,
     /// Whether a search is currently in-flight on the worker thread
     search_in_flight: bool,
+    /// When the edited query is searched, once typing pauses (see
+    /// `schedule_search`)
+    search_due: Option<std::time::Instant>,
     /// Current list search mode
     list_search_mode: ListSearchMode,
     /// Ordering of list search hits (relevance score vs newest first)
@@ -183,6 +186,7 @@ impl App {
             search_rx: parts.search_rx,
             search_generation: 0,
             search_in_flight: false,
+            search_due: None,
             list_search_mode: parts.list_search_mode,
             list_sort: parts.list_sort,
             semantic_search: parts.semantic_search,

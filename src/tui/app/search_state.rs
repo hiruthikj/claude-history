@@ -11,6 +11,12 @@ use chrono::Local;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+/// How long the query has to sit still before it is searched. Each keystroke
+/// used to re-rank the whole corpus (and, in semantic mode, re-embed), so the
+/// list reshuffled under every letter typed.
+pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(180);
 
 #[allow(dead_code)]
 #[derive(Default)]
@@ -216,7 +222,46 @@ impl App {
         Some((self.semantic_corpus_version, self.semantic_scope_version))
     }
 
+    /// Search the edited query once typing pauses for [`SEARCH_DEBOUNCE`].
+    /// Emptying the box restores the full list at once.
+    pub(super) fn schedule_search(&mut self) {
+        if ParsedQuery::parse(self.query.trim()).is_effectively_empty() {
+            self.dispatch_search();
+            return;
+        }
+        self.search_due = Some(Instant::now() + SEARCH_DEBOUNCE);
+    }
+
+    /// Time left before a scheduled search runs, if one is waiting.
+    pub fn search_debounce_remaining(&self) -> Option<Duration> {
+        self.search_due
+            .map(|due| due.saturating_duration_since(Instant::now()))
+    }
+
+    /// Run the scheduled search if typing has paused long enough.
+    pub fn run_due_search(&mut self) {
+        if self.search_due.is_some_and(|due| Instant::now() >= due) {
+            self.dispatch_search();
+        }
+    }
+
+    /// Run a scheduled search now and wait up to `limit` for its ranked
+    /// (lexical) list, so acting on the results acts on what was typed.
+    pub fn settle_scheduled_search(&mut self, limit: Duration) {
+        if self.search_due.is_none() {
+            return;
+        }
+        self.dispatch_search();
+        let deadline = Instant::now() + limit;
+        while self.search_in_flight && Instant::now() < deadline {
+            if !self.receive_search_results() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
     pub(super) fn dispatch_search(&mut self) {
+        self.search_due = None;
         let query = self.query.trim().to_string();
 
         if ParsedQuery::parse(&query).is_effectively_empty() {
@@ -435,6 +480,14 @@ impl App {
     #[cfg(test)]
     pub(super) fn semantic_search_error(&self) -> Option<&str> {
         self.semantic_search.error.as_deref()
+    }
+
+    /// Stands in for the frame loop noticing the debounce has run out.
+    #[cfg(test)]
+    pub(super) fn run_scheduled_search_for_test(&mut self) {
+        if self.search_due.is_some() {
+            self.dispatch_search();
+        }
     }
 
     #[cfg(test)]

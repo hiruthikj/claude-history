@@ -311,7 +311,7 @@ equally relevant results, recent conversations rank first.
 When you want the newest matches first regardless of score, pass
 `--sort recency` (or set `sort = "recency"` under `[search]`), or press
 `Alt+S` in the list to flip between best match and newest; the status bar
-shows the current order. Date-ordered lists pair best with
+says `sort·newest` while newest-first is on. Date-ordered lists pair best with
 quoted phrases: unquoted multi-word queries still require every word, so
 common words flood the list with every session that mentions them.
 

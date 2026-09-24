@@ -18,11 +18,15 @@
   narrows every mode and the agent commands
 - `Alt+S` (`[keys].sort`) flips list hits between best match and newest first;
   newest-first now also applies to semantic results
-- The list fits half again as many conversations per screen, durations read
-  as `8d 1h` instead of `193h 15m`, and search snippets show each repeated
-  passage once and no longer cut words in half
-- Status bars keep actions on the left and toggles on the right, and drop the
-  least useful hints on narrow terminals instead of cutting the line off
+- List rows are separated by a blank line, only the selected row carries the
+  `▌` bar, and message count, duration and time sit in aligned columns;
+  durations read as `8d 1h` instead of `193h 15m`, and search snippets show
+  each repeated passage once and no longer cut words in half
+- The list searches once typing pauses instead of re-ranking on every
+  keystroke; `Enter` straight after typing opens the top hit of what was typed
+- Status bars show only the everyday keys and the filters that are switched
+  on (everything else is under `?`), and drop the least useful hints on
+  narrow terminals instead of cutting the line off
 - Opening a search result starts the viewer at the first match, with `n`/`N`
   ready to step through the rest
 - Resuming or forking a session whose recorded project folder is gone, from

@@ -246,7 +246,13 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
 - Both status bars are lists of `ui::Hint`s (priority, side, spans) laid out
   by `render_hint_bar`: `fit_hints` drops whole hints, highest priority number
   first, so a narrow terminal never shows a cut-off label. Add a hint there
-  rather than pushing spans onto the line.
+  rather than pushing spans onto the line. Toggles appear only when switched
+  away from their default; the full key list is the `?` overlay.
+- Query edits go through `App::schedule_search` (debounced by
+  `search_state::SEARCH_DEBOUNCE`); the frame loop calls `run_due_search`
+  and sizes its poll timeout from `search_debounce_remaining`, and list
+  `Enter` calls `settle_scheduled_search` first. Emptying the query and
+  non-typing changes (scope, sort, mode) still dispatch immediately.
 - Opening a conversation is two-phase (`runtime.rs::EventLoopResult::OpenView`):
   the loop draws one "Opening conversation…" frame, then calls
   `enter_view_mode`, because the transcript read blocks the loop.

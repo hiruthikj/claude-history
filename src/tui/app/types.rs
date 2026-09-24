@@ -151,12 +151,14 @@ impl ListSearchMode {
     }
 }
 
-pub const LIST_LINES_PER_ITEM: usize = 2;
+/// Header, preview and a blank spacer line.
+pub const LIST_LINES_PER_ITEM: usize = 3;
 
 pub fn list_lines_per_item(_mode: ListSearchMode, query: &str) -> usize {
     let parsed = ParsedQuery::parse(query);
     if !parsed.literals().is_empty() {
-        3
+        // Plus the line showing where the quoted literal matched.
+        LIST_LINES_PER_ITEM + 1
     } else {
         LIST_LINES_PER_ITEM
     }

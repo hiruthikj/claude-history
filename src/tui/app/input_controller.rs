@@ -625,7 +625,7 @@ impl App {
         };
 
         if changed && dispatch_search {
-            self.dispatch_search();
+            self.schedule_search();
         }
 
         true

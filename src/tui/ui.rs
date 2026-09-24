@@ -7,7 +7,7 @@ use crate::tui::app::{
 };
 use crate::tui::list_layout::{self, ListLayout};
 use crate::tui::list_rows::{
-    INDICATOR, ListRow, MOVED_SEPARATOR, Recency, RowSource, format_duration, hue_key,
+    COLUMN_GAP, INDICATOR, ListRow, MOVED_SEPARATOR, Recency, RowSource, format_duration, hue_key,
     project_label, project_row, row_evidence, semantic_rationale_label,
 };
 #[cfg(test)]
@@ -269,62 +269,64 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ],
         };
 
+    // The bar names the few keys used on every visit and whichever filters
+    // are switched on; the rest (rename, delete, the toggles in their default
+    // state) live behind `?`, so the bar is not a wall of labels.
     let keys = app.keys();
     let actions = vec![
         action(1, "Enter".to_string(), "open"),
         action(2, keys.resume.short_label(), "resume"),
         action(5, keys.fork.short_label(), "fork"),
-        action(7, keys.rename.short_label(), "rename"),
-        action(6, keys.delete.short_label(), "delete"),
     ];
 
     let mut states = Vec::new();
-    if app.has_project_context() {
-        let project = app.workspace_filter();
+    if app.has_project_context() && app.workspace_filter() {
         states.push(toggle(
             3,
             "Tab".to_string(),
             "scope",
-            if project { "project" } else { "all" }.to_string(),
-            project,
+            "project".to_string(),
+            true,
         ));
     }
-    if app.has_source_choice() {
-        let label = app.source_filter_label();
+    if app.has_source_choice()
+        && let Some(label) = app.source_filter_label()
+    {
         states.push(toggle(
             3,
             "S-Tab".to_string(),
             "source",
-            label.unwrap_or("all").to_string(),
-            label.is_some(),
+            label.to_string(),
+            true,
         ));
     }
-    let project = app.project_filter();
-    states.push(toggle(
-        if project.is_some() { 2 } else { 6 },
-        keys.project.short_label(),
-        "project",
-        project.map_or("all".to_string(), |name| simple_truncate(name, 20)),
-        project.is_some(),
-    ));
-    if app.semantic_toggle_available() {
-        let semantic = app.list_search_mode() == ListSearchMode::Semantic;
+    if let Some(project) = app.project_filter() {
+        states.push(toggle(
+            2,
+            keys.project.short_label(),
+            "project",
+            simple_truncate(project, 20),
+            true,
+        ));
+    }
+    if app.semantic_toggle_available() && app.list_search_mode() == ListSearchMode::Semantic {
         states.push(toggle(
             4,
             "^T".to_string(),
             "search",
             app.list_search_mode().label().to_string(),
-            semantic,
+            true,
         ));
     }
-    let newest = app.list_sort() == SortMode::Recency;
-    states.push(toggle(
-        3,
-        keys.sort.short_label(),
-        "sort",
-        if newest { "newest" } else { "best" }.to_string(),
-        newest,
-    ));
+    if app.list_sort() == SortMode::Recency {
+        states.push(toggle(
+            3,
+            keys.sort.short_label(),
+            "sort",
+            "newest".to_string(),
+            true,
+        ));
+    }
     states.push(Hint {
         priority: 0,
         right: true,
@@ -834,42 +836,29 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
             "resume".into(),
         ));
     } else {
+        // Export, yank, fork and delete are one `?` away.
         hints.extend([
             hint(1, false, "/".into(), "search".into()),
             hint(4, false, "{ }".into(), "prompt".into()),
-            hint(4, false, "e".into(), "export".into()),
-            hint(4, false, "y".into(), "yank".into()),
             hint(2, false, app.keys().resume.short_label(), "resume".into()),
-            hint(5, false, app.keys().fork.short_label(), "fork".into()),
-            hint(6, false, app.keys().delete.short_label(), "delete".into()),
             hint(3, false, "q".into(), "back".into()),
         ]);
     }
     let tools = state.tool_display.status_label();
-    hints.extend([
-        toggle(
-            3,
-            "t",
-            "tools",
-            tools,
-            state.tool_display != crate::tui::ToolDisplayMode::Hidden,
-        ),
-        toggle(
-            3,
-            "T",
-            "thinking",
-            if state.show_thinking { "on" } else { "off" },
-            state.show_thinking,
-        ),
-        toggle(
-            5,
-            "i",
-            "timing",
-            if state.show_timing { "on" } else { "off" },
-            state.show_timing,
-        ),
-        hint(0, true, "?".into(), "help".into()),
-    ]);
+    hints.push(toggle(
+        3,
+        "t",
+        "tools",
+        tools,
+        state.tool_display != crate::tui::ToolDisplayMode::Hidden,
+    ));
+    if state.show_thinking {
+        hints.push(toggle(3, "T", "thinking", "on", true));
+    }
+    if state.show_timing {
+        hints.push(toggle(5, "i", "timing", "on", true));
+    }
+    hints.push(hint(0, true, "?".into(), "help".into()));
 
     render_hint_bar(frame, hints, area);
 }
@@ -1143,7 +1132,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let (rendered_query, query_style) = if app.query().is_empty() {
         (
             simple_truncate(
-                "search conversations · \"quoted\" = exact phrase · ? for keys",
+                "Search conversations  (\"quote\" for an exact phrase, ? for keys)",
                 query_budget,
             ),
             Style::default().fg(rgb(th().dim_label)),
@@ -1540,11 +1529,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-/// Style one projected row into `lines_per_item` lines: header, preview and
-/// optional context (or a blank line to keep row height uniform, so
-/// click-to-row math matches what is drawn). Rows are told apart by the
-/// bright header over the muted preview, not by a rule line, so a page holds
-/// half again as many rows.
+/// Style one projected row into `lines_per_item` lines: header, preview,
+/// optional context, then a blank spacer that separates it from the next.
 /// Split `text` (the project part of a row, after any source badge) into a
 /// leading ` · ` joiner, the repo name and a `/worktree` suffix, each with
 /// its own base style from `styles`; match `ranges` over the whole text keep
@@ -1596,11 +1582,14 @@ fn row_lines(
     is_selected: bool,
     lines_per_item: usize,
 ) -> Vec<Line<'static>> {
-    let indicator_style = if is_selected {
-        Style::default().fg(rgb(th().accent))
+    // Only the selected row carries the bar; a dim bar down every line read
+    // as scan lines.
+    let indicator = if is_selected {
+        INDICATOR.to_string()
     } else {
-        Style::default().fg(rgb(th().border))
+        " ".repeat(INDICATOR.width())
     };
+    let indicator_style = Style::default().fg(rgb(th().accent));
     let hue = rgb(th().project_color(&row.hue_key));
     let project_style = if is_selected {
         Style::default().fg(hue).bold()
@@ -1619,9 +1608,9 @@ fn row_lines(
     } else {
         Style::default()
     };
-    let dot = || Span::styled(" · ", Style::default().fg(rgb(th().dot_separator)));
+    let gap = || Span::raw(COLUMN_GAP);
 
-    let mut header_spans = vec![Span::styled(INDICATOR, indicator_style)];
+    let mut header_spans = vec![Span::styled(indicator.clone(), indicator_style)];
     let (badge, project) = row.project.split_at(row.badge_len);
     if !badge.is_empty() {
         header_spans.push(Span::styled(
@@ -1657,20 +1646,20 @@ fn row_lines(
         Style::default().fg(rgb(th().msg_count)),
     ));
     if let Some(meta) = &row.semantic_meta {
-        header_spans.push(dot());
+        header_spans.push(gap());
         header_spans.push(Span::styled(
             meta.clone(),
             Style::default().fg(rgb(th().accent)),
         ));
     }
     if let Some(duration) = &row.duration {
-        header_spans.push(dot());
+        header_spans.push(gap());
         header_spans.push(Span::styled(
             duration.clone(),
             Style::default().fg(rgb(th().duration_color)),
         ));
     }
-    header_spans.push(dot());
+    header_spans.push(gap());
     let timestamp_color = match row.recency {
         Recency::Now => th().timestamp_now,
         Recency::Minutes => th().timestamp_minutes,
@@ -1684,7 +1673,7 @@ fn row_lines(
     ));
     let header = Line::from(header_spans).style(selection_bg);
 
-    let mut preview_spans = vec![Span::styled(INDICATOR, indicator_style)];
+    let mut preview_spans = vec![Span::styled(indicator.clone(), indicator_style)];
     preview_spans.extend(highlight(
         matcher,
         &row.preview,
@@ -1694,7 +1683,7 @@ fn row_lines(
     let preview = Line::from(preview_spans).style(selection_bg);
 
     let context = row.context.as_ref().map(|context_text| {
-        let mut context_spans = vec![Span::styled(INDICATOR, indicator_style)];
+        let mut context_spans = vec![Span::styled(indicator.clone(), indicator_style)];
         context_spans.extend(highlight(
             matcher,
             context_text,
@@ -1704,13 +1693,18 @@ fn row_lines(
         Line::from(context_spans).style(selection_bg)
     });
 
+    // Every row ends in a blank spacer line; rows in a literal search keep
+    // a context line (blank when there is none) so all rows share a height
+    // and click-to-row math matches what is drawn.
+    let mut lines = vec![header, preview];
     if let Some(ctx) = context {
-        vec![header, preview, ctx]
-    } else if lines_per_item == 3 {
-        vec![header, preview, Line::default()]
-    } else {
-        vec![header, preview]
+        lines.push(ctx);
     }
+    while lines.len() + 1 < lines_per_item {
+        lines.push(Line::default().style(selection_bg));
+    }
+    lines.push(Line::default());
+    lines
 }
 
 #[cfg(test)]
@@ -2005,7 +1999,7 @@ mod tests {
 
         let first_row = row_text(&terminal, 0);
         assert!(
-            first_row.contains("claude-history/drop-semantic…"),
+            first_row.contains("claude-history/drop-seman…"),
             "{first_row:?}"
         );
         assert!(
@@ -2048,7 +2042,11 @@ mod tests {
             first_row.contains("generated summary remains visible"),
             "{first_row:?}"
         );
-        assert!(first_row.contains("1 msg · Jan 01, 00:00"), "{first_row:?}");
+        assert!(first_row.contains("1 msg"), "{first_row:?}");
+        assert!(
+            first_row.trim_end().ends_with("Jan 01, 00:00"),
+            "{first_row:?}"
+        );
     }
 
     #[test]
@@ -2076,10 +2074,10 @@ mod tests {
 
         let first_row = row_text(&terminal, 0);
         assert!(
-            first_row.contains("fork lineage alpha beta gamma delta e…"),
+            first_row.contains("fork lineage alpha beta gamma del…"),
             "{first_row:?}"
         );
-        assert!(first_row.contains("1 msg · Jan 01, 00:00"), "{first_row:?}");
+        assert!(first_row.contains("1 msg  Jan 01, 00:00"), "{first_row:?}");
         assert_eq!(
             UnicodeWidthStr::width(first_row.as_str()),
             72,
@@ -2582,10 +2580,11 @@ mod tests {
     }
 
     #[test]
-    fn literal_query_rows_without_context_keep_the_three_line_pitch() {
+    fn literal_query_rows_without_context_keep_the_four_line_pitch() {
         // Row 1 shows its literal in the preview (no context line); row 2
-        // hides it in full_text (context line). Both must occupy three lines
-        // so that click-to-row math stays aligned with what is drawn.
+        // hides it in full_text (context line). Both must occupy four lines
+        // (with the spacer) so that click-to-row math stays aligned with
+        // what is drawn.
         let mut visible = test_conversation();
         visible.preview = "preview with hidden_literal shown".to_string();
         visible.full_text = visible.preview.clone();
@@ -2607,13 +2606,13 @@ mod tests {
             .draw(|frame| render_list(frame, &app, frame.area()))
             .unwrap();
 
-        // Headers carry the message count; each row starts three lines on.
+        // Headers carry the message count; each row starts four lines on.
         let header_rows: Vec<u16> = (0..12)
             .filter(|&y| row_text(&terminal, y).contains(" msg"))
             .collect();
         assert_eq!(
             header_rows,
-            vec![0, 3],
+            vec![0, 4],
             "{:?}",
             terminal_contents(&terminal)
         );

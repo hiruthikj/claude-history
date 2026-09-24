@@ -169,9 +169,13 @@ where
         && *app.dialog_mode() == DialogMode::None
         && key.code == KeyCode::Enter
         && !app.is_loading()
-        && app.selected().is_some()
     {
-        return Ok(EventLoopResult::OpenView);
+        // Enter right after typing opens the top hit of what was typed, not
+        // of the query the debounce has not searched yet.
+        app.settle_scheduled_search(Duration::from_secs(1));
+        if app.selected().is_some() {
+            return Ok(EventLoopResult::OpenView);
+        }
     }
 
     let Some(action) = app.handle_key(key.code, key.modifiers, frame_state.viewport_height) else {
@@ -236,6 +240,7 @@ pub fn run_with_loader(
             }
         }
 
+        app.run_due_search();
         let mut frame_state = prepare_frame(&mut app, &mut guard.terminal);
         draw_frame(&app, &mut guard.terminal)?;
         if app.receive_search_results() {
@@ -243,7 +248,9 @@ pub fn run_with_loader(
             draw_frame(&app, &mut guard.terminal)?;
         }
 
-        let poll_timeout = if app.is_loading() {
+        let poll_timeout = if let Some(remaining) = app.search_debounce_remaining() {
+            remaining.min(Duration::from_millis(50))
+        } else if app.is_loading() {
             Duration::from_millis(50)
         } else if app.has_search_work_in_flight() {
             Duration::from_millis(8)

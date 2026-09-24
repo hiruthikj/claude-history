@@ -17,12 +17,23 @@ use crate::tui::snippet::{context_snippet, fit_around_matches, sanitize_preview,
 use chrono::{DateTime, Local};
 use unicode_width::UnicodeWidthStr;
 
-/// Left gutter of every row line: a selection bar with padding.
+/// Left gutter of the selected row's lines: a selection bar with padding.
+/// Other rows get the same width in spaces, so only the selection is marked.
 pub const INDICATOR: &str = " ▌ ";
+/// Gap between the right-hand metadata columns.
+pub const COLUMN_GAP: &str = "  ";
+/// Right-hand columns are padded to these widths so they line up from row
+/// to row: `999 msgs`, `23h 59m`, `Sep 15, 18:52`.
+const MSG_COUNT_WIDTH: usize = 8;
+const DURATION_WIDTH: usize = 7;
+const TIMESTAMP_WIDTH: usize = 13;
 /// Columns left between the left part and the right-aligned metadata.
 const MIN_PADDING: usize = 3;
-/// Columns a preview or context line gives up to the indicator and margin.
-const LINE_MARGIN: usize = 4;
+/// Columns a preview or context line gives up to the indicator and the
+/// right-hand margin.
+const LINE_MARGIN: usize = 5;
+/// Blank columns kept at the right edge of every row line.
+const RIGHT_MARGIN: usize = 2;
 /// Narrowest list that still shows a conversation's duration.
 const DURATION_MIN_WIDTH: usize = 100;
 
@@ -125,25 +136,32 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     let width = source.width;
 
     let (timestamp, recency) = format_timestamp(conv.timestamp, now);
+    let timestamp = format!("{timestamp:>TIMESTAMP_WIDTH$}");
     let msg_count = if conv.message_count == 1 {
         "1 msg".to_string()
     } else {
         format!("{} msgs", conv.message_count)
     };
-    // Below this width the title is worth more than the duration.
-    let duration = conv
-        .duration_minutes
-        .filter(|_| width >= DURATION_MIN_WIDTH)
-        .map(format_duration);
+    let msg_count = format!("{msg_count:>MSG_COUNT_WIDTH$}");
+    // Below this width the title is worth more than the duration. Rows
+    // without one keep the column blank so the timestamps still line up.
+    let duration = (width >= DURATION_MIN_WIDTH).then(|| {
+        let text = conv
+            .duration_minutes
+            .map(format_duration)
+            .unwrap_or_default();
+        format!("{text:>DURATION_WIDTH$}")
+    });
     let semantic_meta = (source.semantic_mode && width >= 70)
         .then(|| source.semantic.map(semantic_row_metadata))
         .flatten();
 
-    let widths = |part: &Option<String>| part.as_ref().map(|s| s.width() + 3).unwrap_or(0);
+    let gap = COLUMN_GAP.width();
+    let widths = |part: &Option<String>| part.as_ref().map(|s| s.width() + gap).unwrap_or(0);
     let right_len =
-        msg_count.width() + widths(&duration) + widths(&semantic_meta) + 3 + timestamp.width();
+        msg_count.width() + widths(&duration) + widths(&semantic_meta) + gap + timestamp.width();
     let indicator_len = INDICATOR.width();
-    let left_budget = width.saturating_sub(indicator_len + right_len + MIN_PADDING);
+    let left_budget = width.saturating_sub(indicator_len + right_len + MIN_PADDING + RIGHT_MARGIN);
 
     let badge = source.multiple_sources.then(|| {
         let label = conv
@@ -189,7 +207,7 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
     let custom_title_len = custom_title.as_ref().map(|s| s.width()).unwrap_or(0);
 
     let available_for_summary = width.saturating_sub(
-        indicator_len + project_len + custom_title_len + right_len + MIN_PADDING + 4,
+        indicator_len + project_len + custom_title_len + right_len + MIN_PADDING + 3 + RIGHT_MARGIN,
     );
     let summary = conv
         .summary
@@ -207,7 +225,7 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
         + project_len
         + custom_title_len
         + summary.as_ref().map(|s| s.width()).unwrap_or(0);
-    let padding = width.saturating_sub(left_len + right_len + 1);
+    let padding = width.saturating_sub(left_len + right_len + RIGHT_MARGIN);
 
     let context_ranges = match evidence {
         RowEvidence::Context(ranges) => Some(ranges.as_slice()),
@@ -474,11 +492,12 @@ mod tests {
         assert_eq!(row.project, "project");
         assert_eq!(row.custom_title.as_deref(), Some(" · a title"));
         assert_eq!(row.summary.as_deref(), Some(" · a summary"));
-        assert_eq!(row.msg_count, "3 msgs");
-        assert_eq!(row.duration.as_deref(), Some("1h 15m"));
+        // Right-hand columns are padded so they line up across rows.
+        assert_eq!(row.msg_count, "  3 msgs");
+        assert_eq!(row.duration.as_deref(), Some(" 1h 15m"));
         assert_eq!(
             (row.timestamp.as_str(), row.recency),
-            ("yesterday", Recency::Days)
+            ("    yesterday", Recency::Days)
         );
         assert_eq!(row.preview, "visible preview text");
         assert_eq!(row.context, None);
@@ -488,14 +507,14 @@ mod tests {
             + row.custom_title.as_deref().map_or(0, |s| s.width())
             + row.summary.as_deref().map_or(0, |s| s.width());
         let right = row.msg_count.width()
-            + 3
+            + COLUMN_GAP.width()
             + row.duration.as_deref().map_or(0, |s| s.width())
-            + 3
+            + COLUMN_GAP.width()
             + row.timestamp.width();
         assert_eq!(
             left + row.padding + right,
-            119,
-            "one column of right margin"
+            120 - RIGHT_MARGIN,
+            "right margin"
         );
     }
 
@@ -536,7 +555,15 @@ mod tests {
             &RowEvidence::None,
             now(),
         );
-        assert_eq!(wide.duration.as_deref(), Some("1h 15m"));
+        assert_eq!(wide.duration.as_deref(), Some(" 1h 15m"));
+
+        conv.duration_minutes = None;
+        let blank = project_row(
+            &source(&conv, &matcher, DURATION_MIN_WIDTH),
+            &RowEvidence::None,
+            now(),
+        );
+        assert_eq!(blank.duration.as_deref(), Some("       "));
     }
 
     #[test]
