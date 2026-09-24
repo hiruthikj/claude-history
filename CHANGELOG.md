@@ -24,6 +24,15 @@
   each repeated passage once and no longer cut words in half
 - The list searches once typing pauses instead of re-ranking on every
   keystroke; `Enter` straight after typing opens the top hit of what was typed
+- The search bar counts matches the way fzf does (`9/60`, or the total with
+  no query) and spins while loading or searching; a scrollbar on the list's
+  right edge shows where you are, and the viewer says `Top`, `Bot`, `All` or
+  a percentage like `less`
+- An empty list says why (`No conversations match “…”`) and offers the keys
+  that widen it: clear the search, leave project scope or the project/source
+  filter, or try semantic search
+- `?` groups keys into Move, Search, Filter and Act, stays inside the frame,
+  and dims the screen behind it (as do the rename and export dialogs)
 - Status bars show only the everyday keys and the filters that are switched
   on (everything else is under `?`), and drop the least useful hints on
   narrow terminals instead of cutting the line off

@@ -247,7 +247,12 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
   by `render_hint_bar`: `fit_hints` drops whole hints, highest priority number
   first, so a narrow terminal never shows a cut-off label. Add a hint there
   rather than pushing spans onto the line. Toggles appear only when switched
-  away from their default; the full key list is the `?` overlay.
+  away from their default; the full key list is the `?` overlay
+  (`ui::help_rows`, grouped by section).
+- The list's search bar shows `matches/total` (`App::scope_total`, counted in
+  `prepare_list_rows`), a spinner while `App::is_searching`, and an empty
+  list draws `render_empty_list` instead of rows; the scrollbar thumb is
+  drawn over the outer border's right edge (`scrollbar_thumb`).
 - Query edits go through `App::schedule_search` (debounced by
   `search_state::SEARCH_DEBOUNCE`); the frame loop calls `run_due_search`
   and sizes its poll timeout from `search_debounce_remaining`, and list

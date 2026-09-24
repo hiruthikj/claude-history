@@ -491,6 +491,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn apply_filtered_for_test(&mut self, filtered: Vec<usize>) {
+        self.apply_filtered(filtered);
+    }
+
+    #[cfg(test)]
     pub fn set_query_for_test(&mut self, query: &str) {
         self.query = query.to_string();
         self.cursor_pos = self.query.chars().count();

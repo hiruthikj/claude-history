@@ -134,7 +134,12 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
         list_lines_per_item(app.list_search_mode(), app.query()),
     );
     render_search_bar(frame, app, layout.search_bar);
-    render_list(frame, app, layout.list);
+    if app.filtered().is_empty() {
+        render_empty_list(frame, app, layout.list);
+    } else {
+        render_list(frame, app, layout.list);
+        render_list_scrollbar(frame, app, &layout);
+    }
 
     // Bottom bar (absent on tiny terminals): confirm dialog > status message > hotkeys
     if let Some(bottom) = layout.status_bar {
@@ -162,6 +167,116 @@ fn render_list_mode(frame: &mut Frame, app: &App) {
         DialogMode::Rename { input, cursor } => render_rename_dialog(frame, input, *cursor),
         _ => {}
     }
+}
+
+/// An empty list says why it is empty and which key widens it, instead of
+/// leaving a blank pane.
+fn render_empty_list(frame: &mut Frame, app: &App, area: Rect) {
+    let key_style = Style::default().fg(rgb(th().accent));
+    let label_style = Style::default().fg(rgb(th().text_muted));
+    let title_style = Style::default().fg(rgb(th().text_secondary)).bold();
+    let query = app.query().trim();
+
+    let title = if app.is_loading() {
+        "Loading conversations\u{2026}".to_string()
+    } else if app.is_searching() {
+        "Searching\u{2026}".to_string()
+    } else if query.is_empty() {
+        "No conversations here".to_string()
+    } else {
+        format!(
+            "No conversations match \u{201c}{}\u{201d}",
+            simple_truncate(query, usize::from(area.width).saturating_sub(30).max(8))
+        )
+    };
+
+    let mut hints: Vec<(String, &str)> = Vec::new();
+    if !app.is_loading() && !app.is_searching() {
+        if !query.is_empty() {
+            hints.push(("Esc".into(), "clear the search"));
+        }
+        if app.workspace_filter() {
+            hints.push(("Tab".into(), "search every project"));
+        }
+        if app.project_filter().is_some() {
+            hints.push((app.keys().project.short_label(), "show every project"));
+        }
+        if app.source_filter_label().is_some() {
+            hints.push(("S-Tab".into(), "show every source"));
+        }
+        if !query.is_empty()
+            && app.semantic_toggle_available()
+            && app.list_search_mode() == ListSearchMode::Lexical
+        {
+            hints.push(("^T".into(), "search by meaning"));
+        }
+    }
+
+    // The hints are one left-aligned block, centred as a whole, so their
+    // keys line up.
+    let key_width = hints.iter().map(|(key, _)| key.width()).max().unwrap_or(0);
+    let hint_width = hints
+        .iter()
+        .map(|(_, label)| key_width + 2 + label.width())
+        .max()
+        .unwrap_or(0);
+    let indent = " ".repeat(usize::from(area.width).saturating_sub(hint_width) / 2);
+    let mut lines = vec![Line::styled(title, title_style).centered(), Line::default()];
+    for (key, label) in hints {
+        lines.push(Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::styled(format!("{key:<key_width$}"), key_style),
+            Span::styled(format!("  {label}"), label_style),
+        ]));
+    }
+
+    // A third of the way down reads as "the list", not a dialog.
+    let top = area.height.saturating_sub(lines.len() as u16) / 3;
+    let body = Rect {
+        y: area.y.saturating_add(top),
+        height: area.height.saturating_sub(top),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines), body);
+}
+
+/// Where a scrollbar thumb sits on a `track`-cell track for a window of
+/// `rows` rows starting at `offset` in a list of `len`: `(start, length)`,
+/// or `None` when everything fits.
+fn scrollbar_thumb(track: u16, offset: usize, rows: usize, len: usize) -> Option<(u16, u16)> {
+    if track == 0 || rows == 0 || len <= rows {
+        return None;
+    }
+    let track = usize::from(track);
+    let length = (track * rows / len).clamp(1, track);
+    let max_offset = len - rows;
+    let start = (track - length) * offset.min(max_offset) / max_offset;
+    Some((start as u16, length as u16))
+}
+
+/// A thumb drawn over the outer border's right edge beside the rows, the way
+/// gitui and lazygit show where a long list is scrolled to.
+fn render_list_scrollbar(frame: &mut Frame, app: &App, layout: &ListLayout) {
+    let list = layout.list;
+    let rows = layout.rows_per_page();
+    let len = app.filtered().len();
+    let offset = layout.scroll_offset(app.list_scroll(), app.selected(), len);
+    let Some((start, length)) = scrollbar_thumb(list.height, offset, rows, len) else {
+        return;
+    };
+    let x = list.x.saturating_add(list.width);
+    if x >= frame.area().right() {
+        return;
+    }
+    let thumb = Rect {
+        x,
+        y: list.y + start,
+        width: 1,
+        height: length,
+    };
+    let bar = Paragraph::new(vec![Line::from("\u{2503}"); usize::from(length)])
+        .style(Style::default().fg(rgb(th().accent_dim)));
+    frame.render_widget(bar, thumb);
 }
 
 fn render_status_message(frame: &mut Frame, msg: &str, area: Rect) {
@@ -768,11 +883,11 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
         return;
     }
 
-    // Fixed-width scroll position to prevent bar from jumping
-    // Use minimum width of 4 for both numbers to handle most conversations
-    let total = state.total_lines.max(1);
-    let width = total.to_string().len().max(4);
-    let scroll_pos = format!("[{:>width$}/{:<width$}]", state.scroll_offset + 1, total);
+    let scroll_pos = scroll_position_label(
+        state.scroll_offset,
+        area_content_height(app, state, frame.area()),
+        state.total_lines,
+    );
 
     let key_style = Style::default().fg(rgb(th().accent));
     let label_style = Style::default().fg(rgb(th().text_muted));
@@ -861,6 +976,27 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
     hints.push(hint(0, true, "?".into(), "help".into()));
 
     render_hint_bar(frame, hints, area);
+}
+
+/// Where the viewer is, the way less and vim say it: `All` when the whole
+/// transcript fits, `Top`, `Bot`, or the percentage scrolled; padded to a
+/// fixed width so the hints beside it do not shift while scrolling.
+fn scroll_position_label(offset: usize, viewport: usize, total: usize) -> String {
+    let max_offset = total.saturating_sub(viewport);
+    let label = if max_offset == 0 {
+        "All".to_string()
+    } else if offset == 0 {
+        "Top".to_string()
+    } else if offset >= max_offset {
+        "Bot".to_string()
+    } else {
+        format!("{}%", offset * 100 / max_offset)
+    };
+    format!("{label:>4}")
+}
+
+fn area_content_height(app: &App, state: &ViewState, area: Rect) -> usize {
+    view_layout_rects(area, app, state).content.height as usize
 }
 
 /// Lays hints out on one status line: left-side hints from the left edge,
@@ -1076,12 +1212,24 @@ fn styled_span(text: &str, style: &LineStyle) -> Span<'static> {
 }
 
 fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
+    // fzf's info line: a spinner while work is pending, then matches/total.
+    // Where the selection sits is the scrollbar's job.
+    let busy = app.is_loading() || app.is_searching();
+    let spinner = if busy {
+        format!("{} ", spinner_frame())
+    } else {
+        String::new()
+    };
     let count_text = match app.loading_state() {
-        LoadingState::Loading { loaded } => format!("Loading... {}", loaded),
-        LoadingState::Ready => match app.selected() {
-            Some(selected) => format!("{}/{}", selected + 1, app.filtered().len()),
-            None => format!("0/{}", app.filtered().len()),
-        },
+        LoadingState::Loading { loaded } => format!("loading {loaded}"),
+        LoadingState::Ready => {
+            let total = app.scope_total();
+            if app.query().trim().is_empty() && app.filtered().len() == total {
+                total.to_string()
+            } else {
+                format!("{}/{total}", app.filtered().len())
+            }
+        }
     };
     let status_text = if app.list_search_mode() == ListSearchMode::Semantic {
         app.semantic_status_text()
@@ -1097,6 +1245,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         count_text
     };
+    let status_text = format!("{spinner}{status_text}");
 
     let prompt_style = Style::default().fg(rgb(th().accent));
     let (prompt_spans, prefix_width) = if app.workspace_filter() {
@@ -1116,7 +1265,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
         )
     };
 
-    let status_style = if app.is_loading() {
+    let status_style = if busy {
         Style::default().fg(rgb(th().accent))
     } else {
         Style::default().fg(rgb(th().text_muted))
@@ -1181,6 +1330,15 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Braille spinner, advanced by wall clock so any redraw moves it.
+fn spinner_frame() -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    FRAMES[(millis / 80 % FRAMES.len() as u128) as usize]
+}
+
 fn centered_modal_area(area: Rect, preferred_width: u16, preferred_height: u16) -> Rect {
     let width = preferred_width.min(area.width);
     let height = preferred_height.min(area.height);
@@ -1206,6 +1364,7 @@ fn render_confirm_dialog(frame: &mut Frame, area: Rect) {
 }
 
 fn render_rename_dialog(frame: &mut Frame, input: &str, cursor: usize) {
+    dim_background(frame);
     let area = frame.area();
     let menu_width = area.width.saturating_sub(4).clamp(30, 70);
     let menu_height = 4;
@@ -1255,6 +1414,7 @@ fn render_rename_dialog(frame: &mut Frame, input: &str, cursor: usize) {
 }
 
 fn render_export_menu(frame: &mut Frame, selected: usize, is_yank: bool) {
+    dim_background(frame);
     let title = if is_yank {
         "Copy to clipboard"
     } else {
@@ -1315,6 +1475,138 @@ fn render_export_menu(frame: &mut Frame, selected: usize, is_yank: bool) {
     frame.render_widget(menu_content, inner);
 }
 
+/// One line of the help overlay: a section heading, a key and what it does,
+/// or the blank line between sections.
+enum HelpRow {
+    Section(&'static str),
+    Key(String, &'static str),
+    Gap,
+}
+
+/// Grouped the way lazygit and helix group their key menus, so a key is
+/// found by what it is for rather than by reading the whole list.
+fn help_rows(
+    is_view_mode: bool,
+    is_single_file_mode: bool,
+    semantic_available: bool,
+    keys: &KeyBindings,
+) -> Vec<HelpRow> {
+    let exit_text = if is_single_file_mode {
+        "Quit"
+    } else {
+        "Back to list"
+    };
+    let sections: Vec<(&'static str, Vec<(String, &'static str)>)> = if is_view_mode {
+        vec![
+            (
+                "Move",
+                vec![
+                    ("j / k".into(), "Scroll down / up"),
+                    ("J K / ] [".into(), "Next / previous message"),
+                    ("} / {".into(), "Next / previous prompt"),
+                    ("d / u".into(), "Half page down / up"),
+                    ("g / G".into(), "Jump to top / bottom"),
+                ],
+            ),
+            (
+                "Search",
+                vec![
+                    ("/".into(), "Search"),
+                    ("n / N".into(), "Next / prev match"),
+                ],
+            ),
+            (
+                "Show",
+                vec![
+                    ("t".into(), "Cycle tools: summary/short/full"),
+                    ("T".into(), "Toggle thinking"),
+                    ("i".into(), "Toggle timing"),
+                ],
+            ),
+            (
+                "Act",
+                vec![
+                    (keys.resume.help_label(), "Resume"),
+                    (keys.fork.help_label(), "Fork resume"),
+                    ("e".into(), "Export to file"),
+                    ("y".into(), "Copy to clipboard / message"),
+                    ("p".into(), "Show file path"),
+                    ("Y".into(), "Copy path"),
+                    ("I".into(), "Copy session ID"),
+                    (keys.delete.help_label(), "Delete"),
+                    ("q / Esc".into(), exit_text),
+                ],
+            ),
+        ]
+    } else {
+        let mut filter = vec![
+            ("Tab".into(), "Toggle scope (All/Project)"),
+            ("Shift+Tab".into(), "Cycle source (when several)"),
+            (keys.project.help_label(), "Only this row's project"),
+            (keys.sort.help_label(), "Sort: best match / newest"),
+        ];
+        if semantic_available {
+            filter.push(("Ctrl+T".into(), "Toggle semantic search"));
+            filter.push(("Ctrl+S".into(), "Semantic details"));
+        }
+        vec![
+            (
+                "Move",
+                vec![
+                    ("↑ ↓ / ^P ^N".into(), "Move selection"),
+                    ("PgUp / PgDn".into(), "Jump by page"),
+                    ("Ctrl+D".into(), "Half page down"),
+                    ("Home / End".into(), "Jump to first / last"),
+                ],
+            ),
+            (
+                "Search",
+                vec![
+                    ("\"text\"".into(), "Exact phrase"),
+                    ("← / →".into(), "Move cursor"),
+                    ("Ctrl+W".into(), "Delete word"),
+                    ("Ctrl+U / K".into(), "Delete to start / end"),
+                    ("Esc".into(), "Clear search, then quit"),
+                ],
+            ),
+            ("Filter", filter),
+            (
+                "Act",
+                vec![
+                    ("Enter".into(), "Open viewer"),
+                    (keys.resume.help_label(), "Resume"),
+                    (keys.fork.help_label(), "Fork resume"),
+                    (keys.rename.help_label(), "Rename"),
+                    (keys.delete.help_label(), "Delete"),
+                    ("Ctrl+O".into(), "Select and exit"),
+                ],
+            ),
+        ]
+    };
+
+    let mut rows = Vec::new();
+    for (index, (name, entries)) in sections.into_iter().enumerate() {
+        if index > 0 {
+            rows.push(HelpRow::Gap);
+        }
+        rows.push(HelpRow::Section(name));
+        rows.extend(
+            entries
+                .into_iter()
+                .map(|(key, action)| HelpRow::Key(key, action)),
+        );
+    }
+    rows
+}
+
+/// Dims whatever is already drawn, so a modal reads as in front of it.
+fn dim_background(frame: &mut Frame) {
+    let area = frame.area();
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().add_modifier(Modifier::DIM));
+}
+
 fn render_help_overlay(
     frame: &mut Frame,
     is_view_mode: bool,
@@ -1323,103 +1615,56 @@ fn render_help_overlay(
     keys: &KeyBindings,
     scroll: usize,
 ) {
-    let exit_text = if is_single_file_mode {
-        "Quit"
-    } else {
-        "Back to list"
-    };
+    let rows = help_rows(is_view_mode, is_single_file_mode, semantic_available, keys);
+    let title = " Keys ";
 
-    let shortcuts: Vec<(String, &str)> = if is_view_mode {
-        vec![
-            ("j / ↓".into(), "Scroll down"),
-            ("k / ↑".into(), "Scroll up"),
-            ("J / ]".into(), "Next message"),
-            ("K / [".into(), "Previous message"),
-            ("} / {".into(), "Next / prev prompt"),
-            ("d / Ctrl+D".into(), "Half page down"),
-            ("u / Ctrl+U".into(), "Half page up"),
-            ("g / Home".into(), "Jump to top"),
-            ("G / End".into(), "Jump to bottom"),
-            ("/".into(), "Search"),
-            ("n / N".into(), "Next / prev match"),
-            ("t".into(), "Cycle tools: summary/short/full"),
-            ("T".into(), "Toggle thinking"),
-            ("i".into(), "Toggle timing"),
-            ("e".into(), "Export to file"),
-            ("y".into(), "Copy to clipboard / message"),
-            ("p".into(), "Show file path"),
-            ("Y".into(), "Copy path"),
-            ("I".into(), "Copy session ID"),
-            (keys.resume.help_label(), "Resume"),
-            (keys.fork.help_label(), "Fork resume"),
-            (keys.delete.help_label(), "Delete"),
-            ("q / Esc".into(), exit_text),
-        ]
-    } else {
-        let mut shortcuts = vec![
-            ("↑ / ↓".into(), "Move selection"),
-            ("← / →".into(), "Move cursor"),
-            ("Ctrl+P / N".into(), "Move selection"),
-            ("Ctrl+D".into(), "Half page down"),
-            ("Ctrl+U".into(), "Kill to start of line"),
-            ("Ctrl+K".into(), "Kill to end of line"),
-            ("PgUp / PgDn".into(), "Jump by page"),
-            ("Home / End".into(), "Jump to first/last"),
-            ("Tab".into(), "Toggle scope (All/Project)"),
-            ("Shift+Tab".into(), "Cycle source (when several)"),
-            (keys.sort.help_label(), "Sort: best match / newest"),
-            (keys.project.help_label(), "Only this row's project"),
-            ("Enter".into(), "Open viewer"),
-            ("Ctrl+O".into(), "Select and exit"),
-            ("Ctrl+W".into(), "Delete word"),
-            (keys.resume.help_label(), "Resume"),
-            (keys.fork.help_label(), "Fork resume"),
-            (keys.rename.help_label(), "Rename"),
-            (keys.delete.help_label(), "Delete"),
-            ("Esc".into(), "Quit"),
-        ];
-        if semantic_available {
-            shortcuts.insert(11, ("Ctrl+T".into(), "Toggle semantic search"));
-            shortcuts.insert(12, ("Ctrl+S".into(), "Semantic details"));
-        }
-        shortcuts
-    };
+    let key_width = rows
+        .iter()
+        .filter_map(|row| match row {
+            HelpRow::Key(key, _) => Some(key.width()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let action_width = rows
+        .iter()
+        .filter_map(|row| match row {
+            HelpRow::Key(_, action) => Some(action.width()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    // 3 left pad + key + 3 gap + action + 3 right pad + 2 border
+    let menu_width = (key_width + action_width + 11) as u16;
+    // 1 top pad + rows + 1 bottom pad + 2 border
+    let menu_height = rows.len() as u16 + 4;
 
-    let title = " Shortcuts ";
-
+    // Keep a cell of the frame visible on every side, so the popup never
+    // lands on the app's own border.
     let area = frame.area();
-    // Calculate dimensions based on content (use chars().count() for Unicode)
-    let max_key_len = shortcuts
-        .iter()
-        .map(|(k, _)| k.chars().count())
-        .max()
-        .unwrap_or(0);
-    let max_action_len = shortcuts
-        .iter()
-        .map(|(_, a)| a.chars().count())
-        .max()
-        .unwrap_or(0);
-    // Padding: 2 chars left + key + " │ " (3) + action + 2 chars right
-    let menu_width = (max_key_len + max_action_len + 11) as u16;
-    // Height: 1 top padding + shortcuts + 1 bottom padding + 2 border
-    let menu_height = shortcuts.len() as u16 + 4;
+    let bounds = if area.width > 4 && area.height > 4 {
+        Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width - 2,
+            height: area.height - 2,
+        }
+    } else {
+        area
+    };
+    let menu_area = centered_modal_area(bounds, menu_width, menu_height);
 
-    let menu_area = centered_modal_area(area, menu_width, menu_height);
-
-    // Clear the area behind the modal
+    dim_background(frame);
     frame.render_widget(Clear, menu_area);
-
-    // Render background
     let background = Block::default().style(Style::default().bg(rgb(th().overlay_bg)));
     frame.render_widget(background, menu_area);
 
-    // Render border
     let block = Block::default()
         .title(title)
+        .title_bottom(Line::from(" ? or Esc to close ").right_aligned())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(rgb(th().accent)));
-
     let inner = block.inner(menu_area);
     frame.render_widget(block, menu_area);
 
@@ -1427,46 +1672,55 @@ fn render_help_overlay(
         return;
     }
 
-    let content_height = inner.height as usize;
-    let indicator_needed = shortcuts.len() > content_height;
-    let shortcut_rows = if indicator_needed {
+    // One line of padding above and below when there is room for it.
+    let padded = inner.height as usize >= rows.len() + 2;
+    let content = if padded {
+        Rect {
+            y: inner.y + 1,
+            height: inner.height - 2,
+            ..inner
+        }
+    } else {
+        inner
+    };
+    let content_height = content.height as usize;
+    let indicator_needed = rows.len() > content_height;
+    let visible_rows = if indicator_needed {
         content_height.saturating_sub(1)
     } else {
         content_height
     };
-    let max_scroll = shortcuts.len().saturating_sub(shortcut_rows);
+    let max_scroll = rows.len().saturating_sub(visible_rows);
     let scroll = scroll.min(max_scroll);
 
+    let section_style = Style::default().fg(rgb(th().text_secondary)).bold();
+    let key_style = Style::default().fg(rgb(th().accent));
+    let action_style = Style::default().fg(rgb(th().text_primary));
     let mut lines = Vec::new();
-    if !indicator_needed {
-        lines.extend(
-            (0..content_height.saturating_sub(shortcuts.len()) / 2).map(|_| Line::from("")),
-        );
-    }
-    for (key, action) in shortcuts.iter().skip(scroll).take(shortcut_rows) {
-        let key_padding = max_key_len - key.chars().count();
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("{}{}", key, " ".repeat(key_padding)),
-                Style::default().fg(rgb(th().accent)),
-            ),
-            Span::styled(" │ ", Style::default().fg(rgb(th().border))),
-            Span::styled(
-                action.to_string(),
-                Style::default().fg(rgb(th().text_primary)),
-            ),
-        ]));
+    for row in rows.iter().skip(scroll).take(visible_rows) {
+        lines.push(match row {
+            HelpRow::Section(name) => Line::styled(format!("   {name}"), section_style),
+            HelpRow::Key(key, action) => Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    format!("{key}{}", " ".repeat(key_width - key.width())),
+                    key_style,
+                ),
+                Span::raw("   "),
+                Span::styled(action.to_string(), action_style),
+            ]),
+            HelpRow::Gap => Line::default(),
+        });
     }
 
     if indicator_needed && content_height > 0 {
         let start = scroll + 1;
-        let end = (scroll + shortcut_rows).min(shortcuts.len());
+        let end = (scroll + visible_rows).min(rows.len());
         let indicator = match (scroll > 0, scroll < max_scroll) {
-            (true, true) => format!("  ↑↓ more  {start}-{end}/{}", shortcuts.len()),
-            (true, false) => format!("  ↑ more  {start}-{end}/{}", shortcuts.len()),
-            (false, true) => format!("  ↓ more  {start}-{end}/{}", shortcuts.len()),
-            (false, false) => format!("  {start}-{end}/{}", shortcuts.len()),
+            (true, true) => format!("   ↑↓ more  {start}-{end}/{}", rows.len()),
+            (true, false) => format!("   ↑ more  {start}-{end}/{}", rows.len()),
+            (false, true) => format!("   ↓ more  {start}-{end}/{}", rows.len()),
+            (false, false) => format!("   {start}-{end}/{}", rows.len()),
         };
         lines.push(Line::styled(
             indicator,
@@ -1474,8 +1728,7 @@ fn render_help_overlay(
         ));
     }
 
-    let content = Paragraph::new(lines);
-    frame.render_widget(content, inner);
+    frame.render_widget(Paragraph::new(lines), content);
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -2834,6 +3087,49 @@ mod tests {
                     .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn scrollbar_thumb_tracks_the_window() {
+        assert_eq!(scrollbar_thumb(10, 0, 5, 5), None, "everything fits");
+        assert_eq!(scrollbar_thumb(10, 0, 5, 50), Some((0, 1)));
+        assert_eq!(scrollbar_thumb(10, 45, 5, 50), Some((9, 1)));
+        assert_eq!(scrollbar_thumb(10, 0, 5, 10), Some((0, 5)));
+        assert_eq!(scrollbar_thumb(10, 5, 5, 10), Some((5, 5)));
+        // Offsets past the end clamp to the last position.
+        assert_eq!(scrollbar_thumb(10, 99, 5, 10), Some((5, 5)));
+    }
+
+    #[test]
+    fn scroll_position_reads_like_less() {
+        assert_eq!(scroll_position_label(0, 20, 10), " All");
+        assert_eq!(scroll_position_label(0, 20, 100), " Top");
+        assert_eq!(scroll_position_label(40, 20, 100), " 50%");
+        assert_eq!(scroll_position_label(80, 20, 100), " Bot");
+    }
+
+    #[test]
+    fn empty_search_says_why_and_how_to_widen() {
+        let mut app = App::new(
+            vec![test_conversation()],
+            ToolDisplayMode::Truncated,
+            false,
+            KeyBindings::default(),
+            vec![],
+        );
+        app.set_query_for_test("nothing-matches-this");
+        app.apply_filtered_for_test(Vec::new());
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let contents = terminal_contents(&terminal);
+        assert!(
+            contents.contains("No conversations match “nothing-matches-this”"),
+            "{contents:?}"
+        );
+        assert!(contents.contains("Esc  clear the search"), "{contents:?}");
+        assert!(row_text(&terminal, 1).contains("0/1"), "{contents:?}");
     }
 
     #[test]

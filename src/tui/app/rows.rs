@@ -24,6 +24,9 @@ struct RowCacheKey {
 pub(super) struct RowEvidenceCache {
     key: RowCacheKey,
     rows: HashMap<usize, RowEvidence>,
+    /// Conversations in scope ignoring the query, keyed by the results
+    /// version and corpus size it was counted for.
+    scope_total: Option<(u64, usize, usize)>,
 }
 
 impl App {
@@ -34,6 +37,16 @@ impl App {
 
     /// Ensure every row the next frame will show has its evidence computed.
     pub fn prepare_list_rows(&mut self, layout: &ListLayout) {
+        let scope_key = (self.results_version, self.conversations.len());
+        if self
+            .row_evidence
+            .scope_total
+            .is_none_or(|(version, len, _)| (version, len) != scope_key)
+        {
+            let total = self.filter_indices(0..self.conversations.len()).len();
+            self.row_evidence.scope_total = Some((scope_key.0, scope_key.1, total));
+        }
+
         let key = RowCacheKey {
             results_version: self.results_version,
             query: self.query.clone(),
@@ -80,6 +93,20 @@ impl App {
     /// covered it. The renderer falls back to computing it inline otherwise.
     pub fn row_evidence(&self, conversation_index: usize) -> Option<&RowEvidence> {
         self.row_evidence.rows.get(&conversation_index)
+    }
+
+    /// How many conversations the list holds before the query narrows it
+    /// (the `N` of fzf's `matches/N`), as of the last `prepare_list_rows`.
+    pub fn scope_total(&self) -> usize {
+        self.row_evidence
+            .scope_total
+            .map_or(self.conversations.len(), |(_, _, total)| total)
+    }
+
+    /// Whether the rows on screen may be about to change: the query waits
+    /// out the debounce or a search is being ranked.
+    pub fn is_searching(&self) -> bool {
+        self.search_due.is_some() || self.has_search_work_in_flight()
     }
 
     pub fn has_multiple_sources(&self) -> bool {
