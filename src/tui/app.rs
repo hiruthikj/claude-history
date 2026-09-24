@@ -105,6 +105,9 @@ pub struct App {
     /// When the edited query is searched, once typing pauses (see
     /// `schedule_search`)
     search_due: Option<std::time::Instant>,
+    /// When the app was created; streamed rows stay hidden for
+    /// [`LOADING_GRACE`] after it
+    started: std::time::Instant,
     /// Current list search mode
     list_search_mode: ListSearchMode,
     /// Ordering of list search hits (relevance score vs newest first)
@@ -152,6 +155,9 @@ struct AppParts {
     semantic_search: SemanticSearchState,
 }
 
+/// How long a loading list shows only its spinner before streaming rows.
+pub const LOADING_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
+
 impl App {
     fn from_parts(parts: AppParts) -> Self {
         let multiple_sources = rows::multiple_sources(&parts.conversations);
@@ -187,6 +193,7 @@ impl App {
             search_generation: 0,
             search_in_flight: false,
             search_due: None,
+            started: std::time::Instant::now(),
             list_search_mode: parts.list_search_mode,
             list_sort: parts.list_sort,
             semantic_search: parts.semantic_search,
@@ -481,6 +488,14 @@ impl App {
 
     pub fn is_loading(&self) -> bool {
         matches!(self.loading_state, LoadingState::Loading { .. })
+    }
+
+    /// Whether the list should show rows yet. A warm load finishes within
+    /// [`LOADING_GRACE`], and showing its first batches (then re-sorting
+    /// them, then replacing them) only made the list jump about; a cold load
+    /// starts streaming rows once the grace period is over.
+    pub fn loading_rows_visible(&self) -> bool {
+        !self.is_loading() || self.started.elapsed() >= LOADING_GRACE
     }
 
     // Getters for UI access

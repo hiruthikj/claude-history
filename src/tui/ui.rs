@@ -122,19 +122,16 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn render_list_mode(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    // Outer border wrapping the entire app
-    let outer_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(rgb(th().border)));
-    frame.render_widget(outer_block, area);
-
+    // No frame around the list: margins and blank lines separate the parts,
+    // as in fzf and the viewer.
     let layout = ListLayout::new(
         area,
         list_lines_per_item(app.list_search_mode(), app.query()),
     );
     render_search_bar(frame, app, layout.search_bar);
-    if app.filtered().is_empty() {
+    if !app.loading_rows_visible() {
+        // The search bar's spinner is all there is to say for now.
+    } else if app.filtered().is_empty() {
         render_empty_list(frame, app, layout.list);
     } else {
         render_list(frame, app, layout.list);
@@ -254,8 +251,9 @@ fn scrollbar_thumb(track: u16, offset: usize, rows: usize, len: usize) -> Option
     Some((start as u16, length as u16))
 }
 
-/// A thumb drawn over the outer border's right edge beside the rows, the way
-/// gitui and lazygit show where a long list is scrolled to.
+/// A faint track with a thumb in the right-hand margin, the way gitui and
+/// lazygit show where a long list is scrolled to. Nothing is drawn when the
+/// whole list fits.
 fn render_list_scrollbar(frame: &mut Frame, app: &App, layout: &ListLayout) {
     let list = layout.list;
     let rows = layout.rows_per_page();
@@ -264,36 +262,49 @@ fn render_list_scrollbar(frame: &mut Frame, app: &App, layout: &ListLayout) {
     let Some((start, length)) = scrollbar_thumb(list.height, offset, rows, len) else {
         return;
     };
-    let x = list.x.saturating_add(list.width);
-    if x >= frame.area().right() {
+    // The outermost column, a cell clear of the rows' text.
+    let x = frame.area().right().saturating_sub(1);
+    if x < list.right() {
         return;
     }
-    let thumb = Rect {
+    let track_style = Style::default().fg(rgb(th().border));
+    let thumb_style = Style::default().fg(rgb(th().accent_dim));
+    let lines: Vec<Line> = (0..list.height)
+        .map(|y| {
+            if (start..start + length).contains(&y) {
+                Line::styled("\u{2503}", thumb_style)
+            } else {
+                Line::styled("\u{2502}", track_style)
+            }
+        })
+        .collect();
+    let column = Rect {
         x,
-        y: list.y + start,
+        y: list.y,
         width: 1,
-        height: length,
+        height: list.height,
     };
-    let bar = Paragraph::new(vec![Line::from("\u{2503}"); usize::from(length)])
-        .style(Style::default().fg(rgb(th().accent_dim)));
-    frame.render_widget(bar, thumb);
+    frame.render_widget(Paragraph::new(lines), column);
 }
+
+/// List-mode bottom lines start where the rows' `▌` and the prompt's `❯` do.
+const LIST_BAR_INDENT: &str = " ";
 
 fn render_status_message(frame: &mut Frame, msg: &str, area: Rect) {
     let status_line = Line::from(vec![
-        Span::raw("  "),
+        Span::raw(LIST_BAR_INDENT),
         Span::styled(msg, Style::default().fg(Color::Yellow)),
     ]);
-    let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
+    let status = Paragraph::new(status_line);
     frame.render_widget(status, area);
 }
 
 fn render_activity_status(frame: &mut Frame, msg: &str, area: Rect) {
     let status_line = Line::from(vec![
-        Span::raw("  "),
+        Span::raw(LIST_BAR_INDENT),
         Span::styled(msg, Style::default().fg(rgb(th().accent)).bold()),
     ]);
-    let status = Paragraph::new(status_line).style(Style::default().bg(rgb(th().status_bar_bg)));
+    let status = Paragraph::new(status_line);
     frame.render_widget(status, area);
 }
 
@@ -451,7 +462,12 @@ fn render_list_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ],
     });
 
-    render_hint_bar(frame, actions.into_iter().chain(states).collect(), area);
+    render_hint_bar(
+        frame,
+        actions.into_iter().chain(states).collect(),
+        area,
+        HintBar::Plain,
+    );
 }
 
 fn render_semantic_debug_popup(frame: &mut Frame, app: &App) {
@@ -975,7 +991,7 @@ fn render_view_status_bar(frame: &mut Frame, app: &App, state: &ViewState, area:
     }
     hints.push(hint(0, true, "?".into(), "help".into()));
 
-    render_hint_bar(frame, hints, area);
+    render_hint_bar(frame, hints, area, HintBar::Filled);
 }
 
 /// Where the viewer is, the way less and vim say it: `All` when the whole
@@ -999,11 +1015,24 @@ fn area_content_height(app: &App, state: &ViewState, area: Rect) -> usize {
     view_layout_rects(area, app, state).content.height as usize
 }
 
+/// How a hint line sits on screen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HintBar {
+    /// Plain text aligned with the list's rows (the list has its own margin).
+    Plain,
+    /// A filled bar with its own margin, closing off the viewer's content.
+    Filled,
+}
+
 /// Lays hints out on one status line: left-side hints from the left edge,
 /// right-side ones against the right, dropping by priority to fit.
-fn render_hint_bar(frame: &mut Frame, hints: Vec<Hint>, area: Rect) {
-    let margin = 2;
-    let budget = (area.width as usize).saturating_sub(margin * 2 + HINT_GAP);
+fn render_hint_bar(frame: &mut Frame, hints: Vec<Hint>, area: Rect, bar: HintBar) {
+    // Plain lines start under the rows' `▌` and end where their text does.
+    let (margin, right_margin) = match bar {
+        HintBar::Plain => (LIST_BAR_INDENT.len(), 2),
+        HintBar::Filled => (2, 2),
+    };
+    let budget = (area.width as usize).saturating_sub(margin + right_margin + HINT_GAP);
     let (right, left): (Vec<_>, Vec<_>) = fit_hints(hints, budget)
         .into_iter()
         .partition(|hint| hint.right);
@@ -1024,14 +1053,16 @@ fn render_hint_bar(frame: &mut Frame, hints: Vec<Hint>, area: Rect) {
         .chain(&right)
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum();
-    let padding = (area.width as usize).saturating_sub(used + margin * 2);
+    let padding = (area.width as usize).saturating_sub(used + margin + right_margin);
 
     let mut spans = vec![Span::raw(" ".repeat(margin))];
     spans.extend(left);
     spans.push(Span::raw(" ".repeat(padding)));
     spans.extend(right);
-    let status =
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(rgb(th().status_bar_bg)));
+    let mut status = Paragraph::new(Line::from(spans));
+    if bar == HintBar::Filled {
+        status = status.style(Style::default().bg(rgb(th().status_bar_bg)));
+    }
     frame.render_widget(status, area);
 }
 
@@ -1221,6 +1252,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
     let count_text = match app.loading_state() {
+        LoadingState::Loading { loaded: 0 } => "loading".to_string(),
         LoadingState::Loading { loaded } => format!("loading {loaded}"),
         LoadingState::Ready => {
             let total = app.scope_total();
@@ -1274,16 +1306,13 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let min_gap = usize::from(available > prefix_width);
     let right_budget = available.saturating_sub(prefix_width + min_gap);
     let rendered_status = simple_truncate(&status_text, right_budget);
-    let right_width =
-        UnicodeWidthStr::width(rendered_status.as_str()) + usize::from(!rendered_status.is_empty());
+    let right_width = UnicodeWidthStr::width(rendered_status.as_str())
+        + 2 * usize::from(!rendered_status.is_empty());
     let query_budget = available.saturating_sub(prefix_width + right_width + min_gap);
     // An empty box says what it takes; the cursor still sits at its start.
     let (rendered_query, query_style) = if app.query().is_empty() {
         (
-            simple_truncate(
-                "Search conversations  (\"quote\" for an exact phrase, ? for keys)",
-                query_budget,
-            ),
+            simple_truncate("Search conversations", query_budget),
             Style::default().fg(rgb(th().dim_label)),
         )
     } else {
@@ -1297,7 +1326,8 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(rendered_query, query_style),
         Span::raw(" ".repeat(padding)),
         Span::styled(rendered_status, status_style),
-        Span::raw(" "),
+        // Ends where the rows' right-hand columns end.
+        Span::raw("  "),
     ]);
     let search_line = Line::from(spans);
 
@@ -1903,13 +1933,6 @@ fn row_lines(
         header_spans.push(Span::styled(
             meta.clone(),
             Style::default().fg(rgb(th().accent)),
-        ));
-    }
-    if let Some(duration) = &row.duration {
-        header_spans.push(gap());
-        header_spans.push(Span::styled(
-            duration.clone(),
-            Style::default().fg(rgb(th().duration_color)),
         ));
     }
     header_spans.push(gap());

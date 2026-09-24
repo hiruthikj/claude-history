@@ -248,7 +248,9 @@ fn semantic_list_click_uses_the_list_row_pitch() {
     app.receive_search_results();
     let frame = Rect::new(0, 0, 80, 20);
 
-    assert!(app.handle_list_click(6, frame));
+    // Rows start on line 4 (blank, search bar, rule, blank) and are three
+    // lines tall, so line 7 is the second row's header.
+    assert!(app.handle_list_click(7, frame));
 
     assert_eq!(app.selected(), Some(1));
 }

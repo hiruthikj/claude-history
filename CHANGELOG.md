@@ -18,10 +18,19 @@
   narrows every mode and the agent commands
 - `Alt+S` (`[keys].sort`) flips list hits between best match and newest first;
   newest-first now also applies to semantic results
-- List rows are separated by a blank line, only the selected row carries the
-  `▌` bar, and message count, duration and time sit in aligned columns;
-  durations read as `8d 1h` instead of `193h 15m`, and search snippets show
-  each repeated passage once and no longer cut words in half
+- The TUI draws each frame in one buffered write inside a synchronized
+  update, instead of thousands of small writes that painted the screen top to
+  bottom; startup and every redraw are visibly quicker, especially over SSH
+- The list is borderless: margins and blank lines instead of a box, the
+  prompt, selection bar and status hints share one column, rows are
+  separated by a blank line, only the selected row carries the `▌` bar, and
+  message count and time sit in aligned columns (the session length moved to
+  the viewer header only); durations read as `8d 1h` instead of `193h 15m`,
+  and search snippets show each repeated passage once and no longer cut words
+  in half
+- Startup no longer flashes a placeholder and then a list that reshuffles:
+  a fast load shows the finished list at once, and a slow one shows a spinner,
+  then fills from the most recently active project down
 - The list searches once typing pauses instead of re-ranking on every
   keystroke; `Enter` straight after typing opens the top hit of what was typed
 - The search bar counts matches the way fzf does (`9/60`, or the total with

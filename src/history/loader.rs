@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::fs::{File, read_dir};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
 
@@ -246,26 +246,38 @@ fn load_root(
                 ),
             );
             let cache_dir = cache::claude_cache_dir(&root.dir);
-            projects.par_iter().for_each(|project| {
-                let project_dir = projects_root.join(&project.name);
-                match load_conversations(
-                    &project_dir,
-                    cache_dir.as_deref(),
-                    show_last,
-                    &project.name,
-                    debug_level,
-                ) {
-                    Ok(convs) if !convs.is_empty() => emit(stamp(convs)),
-                    Ok(_) => {}
-                    Err(e) => {
-                        debug::warn(
-                            debug_level,
-                            &format!("Failed to load project {}: {}", project.display_name, e),
-                        );
-                        on_error();
+            // Projects load in parallel but are emitted in `list_projects`
+            // order (most recently active first), so a streaming list fills
+            // from the top instead of reshuffling as whichever project
+            // happened to finish first lands.
+            let in_order = Mutex::new(InOrder::<Conversation>::default());
+            projects
+                .par_iter()
+                .enumerate()
+                .for_each(|(index, project)| {
+                    let project_dir = projects_root.join(&project.name);
+                    let convs = match load_conversations(
+                        &project_dir,
+                        cache_dir.as_deref(),
+                        show_last,
+                        &project.name,
+                        debug_level,
+                    ) {
+                        Ok(convs) => convs,
+                        Err(e) => {
+                            debug::warn(
+                                debug_level,
+                                &format!("Failed to load project {}: {}", project.display_name, e),
+                            );
+                            on_error();
+                            Vec::new()
+                        }
+                    };
+                    let mut in_order = in_order.lock().unwrap_or_else(|e| e.into_inner());
+                    for batch in in_order.push(index, convs) {
+                        emit(stamp(batch));
                     }
-                }
-            });
+                });
             return Ok(RootLoad::Loaded);
         }
     };
@@ -273,6 +285,36 @@ fn load_root(
         emit(stamp(conversations));
     }
     Ok(RootLoad::Loaded)
+}
+
+/// Reorders results that finish out of order: `push` returns, in index
+/// order, every non-empty batch that is now next in line.
+struct InOrder<T> {
+    next: usize,
+    waiting: std::collections::BTreeMap<usize, Vec<T>>,
+}
+
+impl<T> Default for InOrder<T> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            waiting: Default::default(),
+        }
+    }
+}
+
+impl<T> InOrder<T> {
+    fn push(&mut self, index: usize, batch: Vec<T>) -> Vec<Vec<T>> {
+        self.waiting.insert(index, batch);
+        let mut ready = Vec::new();
+        while let Some(batch) = self.waiting.remove(&self.next) {
+            self.next += 1;
+            if !batch.is_empty() {
+                ready.push(batch);
+            }
+        }
+        ready
+    }
 }
 
 /// Find a Claude session JSONL file by UUID across every Claude root.
@@ -790,6 +832,15 @@ pub fn load_conversations(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn projects_are_emitted_in_recency_order_whatever_finishes_first() {
+        let mut in_order = InOrder::default();
+        assert!(in_order.push(2, vec![20]).is_empty());
+        assert!(in_order.push(1, vec![]).is_empty());
+        assert_eq!(in_order.push(0, vec![1, 2]), vec![vec![1, 2], vec![20]]);
+        assert_eq!(in_order.push(3, vec![30]), vec![vec![30]]);
+    }
 
     fn write_transcript(lines: &[&str]) -> tempfile::NamedTempFile {
         let mut file = tempfile::Builder::new()

@@ -225,12 +225,15 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
 ### tui/ and rendering
 
 - `tui/runtime.rs` owns the loop and `TerminalGuard` (raw mode + alternate
-  screen on **stderr**). `App` state is split by concern under `tui/app/`;
+  screen on **stderr**, behind a `BufWriter`: stderr is unbuffered, so an
+  unbuffered backend emits one syscall per cell; `draw_frame` wraps each
+  frame in a synchronized update and flushes). `App` state is split by concern under `tui/app/`;
   `tui/app/types.rs::Action` is what returns to main. Each iteration is
   `prepare_frame` → draw → `receive_search_results` → (prepare + draw again
   if anything arrived); per-frame preparation must happen in `prepare_frame`,
   never in a renderer, because renderers take `&App`.
-- List mode has one geometry owner, `tui/list_layout.rs`: rects, rows per
+- List mode has one geometry owner, `tui/list_layout.rs` (borderless: side
+  margins and blank lines, dropped on short terminals): rects, rows per
   page, the row under a screen line, and the pure `scroll_offset` (anchored
   window with scrolloff) that `ui::render_list` and `App::handle_list_click`
   both evaluate from the same inputs. `App::commit_list_layout` settles the
@@ -266,6 +269,10 @@ Consumers parse records by named atoms and must tolerate extra atoms, so:
   the whole unquoted query, then its longest word.
 - Streaming load: batches arrive over a channel and are appended, but search
   text is only precomputed and search re-dispatched at `finish_loading`.
+  The Claude loader emits projects in `list_projects` (recency) order via
+  `loader.rs::InOrder` even though they load in parallel, and the list
+  shows no rows for `app::LOADING_GRACE` after start
+  (`App::loading_rows_visible`), so a warm load appears finished at once.
 - Lexical and semantic workers are threads with generation counters. Any
   mutation of `conversations` must go through `refresh_search_data` /
   `invalidate_search_generation` or stale worker responses get applied.

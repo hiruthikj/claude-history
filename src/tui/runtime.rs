@@ -13,13 +13,18 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::prelude::*;
-use std::io::{self, Stderr};
+use std::io::{self, BufWriter, Stderr, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
+/// The TUI draws to stderr (stdout stays clean for `--show-*`), and stderr is
+/// unbuffered: without this every escape code and cell was its own write, so
+/// frames visibly painted top to bottom. Buffered, a frame is one write.
+type Backend = CrosstermBackend<BufWriter<Stderr>>;
+
 struct TerminalGuard {
-    terminal: Terminal<CrosstermBackend<Stderr>>,
+    terminal: Terminal<Backend>,
 }
 
 impl TerminalGuard {
@@ -32,7 +37,7 @@ impl TerminalGuard {
             return Err(AppError::Io(io::Error::other(e)));
         }
 
-        let backend = CrosstermBackend::new(stderr);
+        let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 16, stderr));
         let terminal = match Terminal::new(backend) {
             Ok(t) => t,
             Err(e) => {
@@ -83,7 +88,7 @@ fn read_event(wait: Duration) -> Result<Option<Event>> {
         .map_err(|e| AppError::Io(io::Error::other(e)))
 }
 
-fn prepare_frame(app: &mut App, terminal: &mut Terminal<CrosstermBackend<Stderr>>) -> FrameState {
+fn prepare_frame(app: &mut App, terminal: &mut Terminal<Backend>) -> FrameState {
     let frame_area = terminal.get_frame().area();
     let viewport_height = frame_area.height.saturating_sub(3) as usize;
     let content_width =
@@ -112,8 +117,15 @@ fn prepare_frame(app: &mut App, terminal: &mut Terminal<CrosstermBackend<Stderr>
     }
 }
 
-fn draw_frame(app: &App, terminal: &mut Terminal<CrosstermBackend<Stderr>>) -> Result<()> {
+/// Draws inside a synchronized update (DEC mode 2026), so terminals that
+/// support it show the frame at once instead of as it streams in; others
+/// ignore the sequences.
+fn draw_frame(app: &App, terminal: &mut Terminal<Backend>) -> Result<()> {
+    let io = |e: io::Error| AppError::Io(e);
+    crossterm::queue!(terminal.backend_mut(), terminal::BeginSynchronizedUpdate).map_err(io)?;
     terminal.draw(|frame| ui::render(frame, app))?;
+    crossterm::queue!(terminal.backend_mut(), terminal::EndSynchronizedUpdate).map_err(io)?;
+    terminal.backend_mut().flush().map_err(io)?;
     Ok(())
 }
 

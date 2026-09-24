@@ -21,37 +21,51 @@ pub struct ListLayout {
     pub lines_per_item: usize,
 }
 
+/// Blank columns left and right of everything in list mode.
+pub const SIDE_MARGIN: u16 = 2;
+/// Terminals shorter than this lose the breathing lines around the search
+/// bar and above the status bar.
+const AIRY_MIN_HEIGHT: u16 = 12;
+
 impl ListLayout {
-    /// Split the whole frame: a rounded outer border, then a two-line search
-    /// bar, the row area, and a one-line bottom bar that is dropped when the
-    /// inner area is shorter than four lines.
+    /// Split the whole frame, borderless: a side margin, a blank line, the
+    /// two-line search bar (query and a rule), another blank line, the row
+    /// area, a blank line and the one-line status bar. Short terminals drop
+    /// the blank lines first, then the status bar.
     pub fn new(frame_area: Rect, lines_per_item: usize) -> Self {
-        let inner = Rect {
-            x: frame_area.x.saturating_add(1),
-            y: frame_area.y.saturating_add(1),
-            width: frame_area.width.saturating_sub(2),
-            height: frame_area.height.saturating_sub(2),
-        };
-        let search_bar = Rect {
-            height: inner.height.min(2),
-            ..inner
-        };
-        let below_search = inner.height.saturating_sub(2);
-        let (list_height, status_bar) = if inner.height < 4 {
-            (below_search, None)
+        let margin = if frame_area.width >= 40 {
+            SIDE_MARGIN
         } else {
-            let list_height = below_search.saturating_sub(1);
-            let status_bar = Rect {
-                y: inner.y.saturating_add(2).saturating_add(list_height),
-                height: 1,
-                ..inner
-            };
-            (list_height, Some(status_bar))
+            0
+        };
+        let x = frame_area.x.saturating_add(margin);
+        let width = frame_area.width.saturating_sub(margin * 2);
+        let air = u16::from(frame_area.height >= AIRY_MIN_HEIGHT);
+        let top = frame_area.y.saturating_add(air);
+        let bottom = frame_area.y.saturating_add(frame_area.height);
+
+        let search_bar = Rect {
+            x,
+            y: top,
+            width,
+            height: 2.min(bottom.saturating_sub(top)),
+        };
+        let list_y = top.saturating_add(2 + air).min(bottom);
+        let status_bar = (frame_area.height >= 6).then(|| Rect {
+            x,
+            y: bottom - 1,
+            width,
+            height: 1,
+        });
+        let list_end = match status_bar {
+            Some(bar) => bar.y.saturating_sub(air),
+            None => bottom,
         };
         let list = Rect {
-            y: inner.y.saturating_add(2),
-            height: list_height,
-            ..inner
+            x,
+            y: list_y,
+            width,
+            height: list_end.saturating_sub(list_y),
         };
         Self {
             search_bar,
@@ -123,31 +137,35 @@ mod tests {
     #[test]
     fn splits_frame_into_search_rows_and_status_bar() {
         let layout = ListLayout::new(Rect::new(0, 0, 80, 20), 3);
-        assert_eq!(layout.search_bar, Rect::new(1, 1, 78, 2));
-        assert_eq!(layout.list, Rect::new(1, 3, 78, 15));
-        assert_eq!(layout.status_bar, Some(Rect::new(1, 18, 78, 1)));
-        assert_eq!(layout.rows_per_page(), 5);
+        assert_eq!(layout.search_bar, Rect::new(2, 1, 76, 2));
+        assert_eq!(layout.list, Rect::new(2, 4, 76, 14));
+        assert_eq!(layout.status_bar, Some(Rect::new(2, 19, 76, 1)));
+        assert_eq!(layout.rows_per_page(), 4);
     }
 
     #[test]
-    fn tiny_terminal_drops_status_bar() {
-        let layout = ListLayout::new(Rect::new(0, 0, 40, 5), 3);
+    fn short_terminal_drops_the_blank_lines_then_the_status_bar() {
+        let layout = ListLayout::new(Rect::new(0, 0, 80, 8), 3);
+        assert_eq!(layout.search_bar, Rect::new(2, 0, 76, 2));
+        assert_eq!(layout.list, Rect::new(2, 2, 76, 5));
+        assert_eq!(layout.status_bar, Some(Rect::new(2, 7, 76, 1)));
+
+        let layout = ListLayout::new(Rect::new(0, 0, 30, 5), 3);
         assert_eq!(layout.status_bar, None);
-        assert_eq!(layout.list, Rect::new(1, 3, 38, 1));
-        assert_eq!(layout.rows_per_page(), 0);
-        assert_eq!(layout.row_at(0, 3, 10), None);
+        assert_eq!(layout.list, Rect::new(0, 2, 30, 3));
+        assert_eq!(layout.rows_per_page(), 1);
     }
 
     #[test]
     fn row_at_maps_screen_lines_to_visible_rows() {
         let layout = ListLayout::new(Rect::new(0, 0, 80, 20), 3);
-        assert_eq!(layout.row_at(0, 3, 10), Some(0));
-        assert_eq!(layout.row_at(0, 5, 10), Some(0));
-        assert_eq!(layout.row_at(0, 6, 10), Some(1));
-        assert_eq!(layout.row_at(4, 6, 10), Some(5));
+        assert_eq!(layout.row_at(0, 4, 10), Some(0));
+        assert_eq!(layout.row_at(0, 6, 10), Some(0));
+        assert_eq!(layout.row_at(0, 7, 10), Some(1));
+        assert_eq!(layout.row_at(4, 7, 10), Some(5));
         assert_eq!(layout.row_at(0, 2, 10), None, "search bar");
-        assert_eq!(layout.row_at(0, 18, 10), None, "status bar");
-        assert_eq!(layout.row_at(0, 9, 2), None, "past the end of the list");
+        assert_eq!(layout.row_at(0, 19, 10), None, "status bar");
+        assert_eq!(layout.row_at(0, 10, 2), None, "past the end of the list");
     }
 
     #[test]

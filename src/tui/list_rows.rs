@@ -23,9 +23,9 @@ pub const INDICATOR: &str = " ▌ ";
 /// Gap between the right-hand metadata columns.
 pub const COLUMN_GAP: &str = "  ";
 /// Right-hand columns are padded to these widths so they line up from row
-/// to row: `999 msgs`, `23h 59m`, `Sep 15, 18:52`.
+/// to row: `999 msgs`, `Sep 15, 18:52`. How long a session ran is the
+/// viewer header's business; in the list it was one column too many.
 const MSG_COUNT_WIDTH: usize = 8;
-const DURATION_WIDTH: usize = 7;
 const TIMESTAMP_WIDTH: usize = 13;
 /// Columns left between the left part and the right-aligned metadata.
 const MIN_PADDING: usize = 3;
@@ -34,8 +34,6 @@ const MIN_PADDING: usize = 3;
 const LINE_MARGIN: usize = 5;
 /// Blank columns kept at the right edge of every row line.
 const RIGHT_MARGIN: usize = 2;
-/// Narrowest list that still shows a conversation's duration.
-const DURATION_MIN_WIDTH: usize = 100;
 
 /// Everything a row is derived from.
 #[derive(Clone, Copy)]
@@ -93,7 +91,6 @@ pub struct ListRow {
     pub msg_count: String,
     /// Hybrid score in semantic mode on wide terminals.
     pub semantic_meta: Option<String>,
-    pub duration: Option<String>,
     pub timestamp: String,
     pub recency: Recency,
     /// Second line: the preview, a hidden-context snippet, or the semantic
@@ -143,23 +140,13 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
         format!("{} msgs", conv.message_count)
     };
     let msg_count = format!("{msg_count:>MSG_COUNT_WIDTH$}");
-    // Below this width the title is worth more than the duration. Rows
-    // without one keep the column blank so the timestamps still line up.
-    let duration = (width >= DURATION_MIN_WIDTH).then(|| {
-        let text = conv
-            .duration_minutes
-            .map(format_duration)
-            .unwrap_or_default();
-        format!("{text:>DURATION_WIDTH$}")
-    });
     let semantic_meta = (source.semantic_mode && width >= 70)
         .then(|| source.semantic.map(semantic_row_metadata))
         .flatten();
 
     let gap = COLUMN_GAP.width();
     let widths = |part: &Option<String>| part.as_ref().map(|s| s.width() + gap).unwrap_or(0);
-    let right_len =
-        msg_count.width() + widths(&duration) + widths(&semantic_meta) + gap + timestamp.width();
+    let right_len = msg_count.width() + widths(&semantic_meta) + gap + timestamp.width();
     let indicator_len = INDICATOR.width();
     let left_budget = width.saturating_sub(indicator_len + right_len + MIN_PADDING + RIGHT_MARGIN);
 
@@ -248,7 +235,6 @@ pub fn project_row(source: &RowSource, evidence: &RowEvidence, now: DateTime<Loc
         padding,
         msg_count,
         semantic_meta,
-        duration,
         timestamp,
         recency,
         preview,
@@ -494,7 +480,6 @@ mod tests {
         assert_eq!(row.summary.as_deref(), Some(" · a summary"));
         // Right-hand columns are padded so they line up across rows.
         assert_eq!(row.msg_count, "  3 msgs");
-        assert_eq!(row.duration.as_deref(), Some(" 1h 15m"));
         assert_eq!(
             (row.timestamp.as_str(), row.recency),
             ("    yesterday", Recency::Days)
@@ -506,11 +491,7 @@ mod tests {
             + row.project.width()
             + row.custom_title.as_deref().map_or(0, |s| s.width())
             + row.summary.as_deref().map_or(0, |s| s.width());
-        let right = row.msg_count.width()
-            + COLUMN_GAP.width()
-            + row.duration.as_deref().map_or(0, |s| s.width())
-            + COLUMN_GAP.width()
-            + row.timestamp.width();
+        let right = row.msg_count.width() + COLUMN_GAP.width() + row.timestamp.width();
         assert_eq!(
             left + row.padding + right,
             120 - RIGHT_MARGIN,
@@ -535,35 +516,6 @@ mod tests {
             same_name.project, "Work",
             "no arrow when the name is the same"
         );
-    }
-
-    #[test]
-    fn narrow_rows_give_the_duration_up_to_the_title() {
-        let mut conv = conversation();
-        conv.custom_title = Some("Last commit review for improvements".to_string());
-        let matcher = QueryMatcher::from_query("");
-
-        let narrow = project_row(&source(&conv, &matcher, 80), &RowEvidence::None, now());
-        assert_eq!(narrow.duration, None);
-        assert_eq!(
-            narrow.custom_title.as_deref(),
-            Some(" · Last commit review for improvements")
-        );
-
-        let wide = project_row(
-            &source(&conv, &matcher, DURATION_MIN_WIDTH),
-            &RowEvidence::None,
-            now(),
-        );
-        assert_eq!(wide.duration.as_deref(), Some(" 1h 15m"));
-
-        conv.duration_minutes = None;
-        let blank = project_row(
-            &source(&conv, &matcher, DURATION_MIN_WIDTH),
-            &RowEvidence::None,
-            now(),
-        );
-        assert_eq!(blank.duration.as_deref(), Some("       "));
     }
 
     #[test]
